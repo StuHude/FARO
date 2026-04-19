@@ -1,0 +1,9 @@
+{
+  "stage": "stage1_joint_sft",
+  "status": "pending",
+  "best_checkpoint": null,
+  "metrics": {},
+  "notes": [
+    "代码与脚本已落地，尚未在真实公开数据上完成训练。"
+  ]
+}

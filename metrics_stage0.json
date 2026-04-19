@@ -1,0 +1,44 @@
+{
+  "stage": "stage0_smoke",
+  "status": "partial_pass",
+  "results": {
+    "refseg_schema_records": 25,
+    "maskcap_schema_records": 25,
+    "smoke_mixed_records": 50,
+    "codec_roundtrip": {
+      "sample_id": "example_0_0",
+      "codes": [230, 345],
+      "ciou": 0.8093198111557964
+    },
+    "dataset_fetch": [
+      {
+        "idx": 0,
+        "task": "refseg",
+        "id": "example_0_0",
+        "codes": [230, 345]
+      },
+      {
+        "idx": 25,
+        "task": "maskcap",
+        "id": "example_cap_0_0",
+        "codes": [230, 345]
+      }
+    ],
+    "local_export_smoke": [
+      {
+        "dataset": "gar_part1",
+        "exported_rows": 10,
+        "output": "/mnt/pfs/xiaoyicheng/data/pixvl_idea1/schemas_test/fine_grained_dataset_part1_train.jsonl"
+      },
+      {
+        "dataset": "dam_cocostuff",
+        "exported_rows": 10,
+        "output": "/mnt/pfs/xiaoyicheng/data/pixvl_idea1/schemas_test/dam_cocostuff_partial.jsonl"
+      }
+    ]
+  },
+  "notes": [
+    "Qwen3-VL-4B-SAMTok-co 的完整 10.7GB 权重下载仍在继续，因此 full generate smoke 还未收敛为最终通过状态。",
+    "SAMTok tokenizer / SAM2 asset 下载、mask encode-decode、online overlay、unified dataset、本地 GAR Arrow 导出、本地 DAM tar 导出已验证可用。"
+  ]
+}

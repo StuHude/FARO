@@ -1,0 +1,9 @@
+{
+  "stage": "stage2_joint_failed_only_opd",
+  "status": "pending",
+  "best_checkpoint": null,
+  "metrics": {},
+  "notes": [
+    "等待 Stage 1 checkpoint 与真实数据导出完成后运行。"
+  ]
+}

@@ -1,0 +1,48 @@
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtualenvs / local envs
+.venv/
+venv/
+env/
+
+# Large local archives / logs
+*.tar
+*.tar.gz
+*.zip
+*.log
+
+# Data, checkpoints, caches, outputs
+data/
+outputs/
+models/
+.cache/
+
+# Local generated content inside Sa2VA
+Sa2VA/data/
+Sa2VA/godx7/
+Sa2VA/temp_save/
+Sa2VA/**/temp_save/
+Sa2VA/**/gcg_eval_tmp/
+Sa2VA/**/eval_temp_save*/
+
+# Local benchmark / eval artifacts
+official_eval/
+*.sqlite3
+*.db
+
+# Keep project code, but ignore local model and dataset drops if they appear inside repo
+**/mask_tokenizer_256x2.pth
+**/sam2.1_hiera_large.pt
+**/*.safetensors
+**/*.bin

@@ -1,0 +1,9 @@
+{
+  "stage": "stage3_joint_opd_rl",
+  "status": "pending",
+  "best_checkpoint": null,
+  "metrics": {},
+  "notes": [
+    "等待 Stage 2 checkpoint 与 reward 依赖安装完成后运行。"
+  ]
+}
