@@ -51,6 +51,25 @@ def parse_args():
         '--output_path',
         default='./godx7/DLC-Bench/result_qwen3vl_4b.json',
         help='output json path.')
+    parser.add_argument(
+        '--max_new_tokens',
+        type=int,
+        default=1024,
+        help='generation max_new_tokens')
+    parser.add_argument(
+        '--prompt_suffix',
+        default='',
+        help='optional suffix appended to the question prompt')
+    parser.add_argument(
+        '--task_id',
+        type=int,
+        default=0,
+        help='shard id for distributed evaluation')
+    parser.add_argument(
+        '--num_tasks',
+        type=int,
+        default=1,
+        help='number of shards for distributed evaluation')
     args = parser.parse_args()
     return args
 
@@ -112,7 +131,9 @@ def main():
     # download from huggingface dataset repo: godx7/DLC-Bench
     with open(args.dataset, 'r') as f:
         eval_samples = json.load(f)
-    
+    if args.num_tasks > 1:
+        eval_samples = eval_samples[args.task_id::args.num_tasks]
+
     all_items = []
     for eval_sample in eval_samples:
         image_name = eval_sample['image_name']
@@ -237,6 +258,8 @@ def main():
                 crop_quant_codes = remap_crop_quant_codes
                 zoom_in_mask_tokens_str = MT_START_TOKEN + ''.join([MT_CONTEXT_TOKEN.format(str(code).zfill(4)) for code in crop_quant_codes]) + MT_END_TOKEN
                 question = "Given a detailed description of this region {SEG}. Zoom in with the perspective as ".format(SEG=global_mask_tokens_str)
+                if args.prompt_suffix:
+                    question = f"{question} {args.prompt_suffix.strip()}"
                 buffer = io.BytesIO()
                 if resized_crop_image is None:
                     cropped_image.save(buffer, format='JPEG')
@@ -268,6 +291,8 @@ def main():
                 ]
             else:
                 question = "Given a detailed description of this region {SEG}.".format(SEG=global_mask_tokens_str)
+                if args.prompt_suffix:
+                    question = f"{question} {args.prompt_suffix.strip()}"
                 with open(image_path, "rb") as f:
                     b64 = base64.b64encode(f.read()).decode()
 
@@ -295,7 +320,7 @@ def main():
             # Inference: Generation of the output
             generated_ids = model.generate(
                 **inputs, 
-                max_new_tokens=1024,
+                max_new_tokens=args.max_new_tokens,
                 do_sample=False,  # 关闭采样，使用贪婪解码
                 top_p=1.0,  # 配合do_sample=False使用
             )

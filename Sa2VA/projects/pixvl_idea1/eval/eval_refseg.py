@@ -23,6 +23,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adapter-path", required=True)
     parser.add_argument("--schema-file", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--task-id", type=int, default=0)
+    parser.add_argument("--num-tasks", type=int, default=1)
     return parser.parse_args()
 
 
@@ -43,7 +45,8 @@ def main() -> None:
         overlay_cfg=cfg["data"]["overlay"],
     )
     results = []
-    for idx in range(len(dataset)):
+    indices = list(range(len(dataset)))[args.task_id :: args.num_tasks]
+    for idx in indices:
         sample = dataset[idx]
         if sample["task"] != "refseg":
             continue
@@ -58,6 +61,8 @@ def main() -> None:
         "num_samples": len(results),
         "mean_ciou": sum(item["ciou"] for item in results) / max(len(results), 1),
         "results": results,
+        "task_id": args.task_id,
+        "num_tasks": args.num_tasks,
     }
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with Path(args.output).open("w", encoding="utf-8") as handle:

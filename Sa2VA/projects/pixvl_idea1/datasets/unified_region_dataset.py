@@ -206,7 +206,10 @@ class UnifiedRegionDataset(Dataset):
                     else:
                         aux_codes = None
                         aux_mask_tokens = None
-                        prompt_text = self.prompt_templates["maskcap"].format(mask_tokens=mask_tokens)
+                        meta = record.get("meta") or {}
+                        prompt_key = meta.get("prompt_key", "maskcap")
+                        template = self.prompt_templates.get(prompt_key, self.prompt_templates["maskcap"])
+                        prompt_text = template.format(mask_tokens=mask_tokens)
                     answer_text = record["caption"]
 
                 return {
@@ -426,48 +429,40 @@ class HomogeneousTaskBatchSampler(Sampler[list[int]]):
         if not task_available:
             return None
 
+        eligible_tasks = {
+            task: count
+            for task, count in task_available.items()
+            if count >= self.group_size
+        }
+        if not eligible_tasks:
+            return None
+
         task_weights = {
             task: float(self.dataset.task_mix.get(task, 1.0))
-            for task in task_available
+            for task in eligible_tasks
         }
-        task_counts = self._allocate_counts(task_weights, self.group_size)
-
         block: list[int] = []
-        for task, count in task_counts.items():
-            if count <= 0:
-                continue
-            if task == "maskcap":
-                source_available = self._source_available_counts(pools, task)
-                source_weights = {
-                    source: float(self.dataset.source_mix.get(source, 1.0))
-                    for source in source_available
-                }
-                source_counts = self._allocate_counts(source_weights, count)
-                collected = 0
-                for source, source_count in source_counts.items():
-                    for _ in range(source_count):
-                        chosen_key = self._choose_group_key(pools, rng, task=task, source=source)
-                        if chosen_key is None:
-                            break
-                        block.append(pools[chosen_key].pop())
-                        collected += 1
-                while collected < count:
-                    chosen_key = self._choose_group_key(pools, rng, task=task)
+        if sum(task_weights.values()) <= 0.0:
+            chosen_task = rng.choice(list(eligible_tasks.keys()))
+        else:
+            chosen_task = rng.choices(list(task_weights.keys()), weights=list(task_weights.values()), k=1)[0]
+
+        if chosen_task == "maskcap":
+            source_available = self._source_available_counts(pools, chosen_task)
+            source_weights = {
+                source: float(self.dataset.source_mix.get(source, 1.0))
+                for source in source_available
+            }
+            source_counts = self._allocate_counts(source_weights, self.group_size)
+            for source, source_count in source_counts.items():
+                for _ in range(source_count):
+                    chosen_key = self._choose_group_key(pools, rng, task=chosen_task, source=source)
                     if chosen_key is None:
                         break
                     block.append(pools[chosen_key].pop())
-                    collected += 1
-            else:
-                collected = 0
-                for _ in range(count):
-                    chosen_key = self._choose_group_key(pools, rng, task=task)
-                    if chosen_key is None:
-                        break
-                    block.append(pools[chosen_key].pop())
-                    collected += 1
 
         while len(block) < self.group_size:
-            chosen_key = self._choose_group_key(pools, rng)
+            chosen_key = self._choose_group_key(pools, rng, task=chosen_task)
             if chosen_key is None:
                 break
             block.append(pools[chosen_key].pop())

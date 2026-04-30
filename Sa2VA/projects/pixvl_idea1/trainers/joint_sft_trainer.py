@@ -14,8 +14,10 @@ from projects.pixvl_idea1.trainers.common import (
     build_model_bundle,
     build_optimizer_and_scheduler,
     build_prompt_and_answer_ids,
+    build_supervised_batch_inputs,
     clean_generated_text,
     compute_answer_cross_entropy,
+    compute_answer_cross_entropy_batch,
     extract_adapter_state_dict,
     find_latest_adapter_checkpoint,
     find_latest_state_checkpoint,
@@ -121,22 +123,20 @@ def main() -> None:
             with accelerator.accumulate(model):
                 total_loss = 0.0
                 task_loss = {"refseg": 0.0, "maskcap": 0.0}
-                for sample in batch:
-                    prompt_inputs, answer_ids = build_prompt_and_answer_ids(
-                        processor,
-                        sample["image"],
-                        sample["prompt_text"],
-                        sample["answer_text"],
-                    )
-                    prompt_inputs = move_inputs_to_device(prompt_inputs, accelerator.device)
-                    answer_ids = answer_ids.to(accelerator.device)
-                    answer_logits = forward_answer_logits(model, prompt_inputs, answer_ids)
-                    loss = compute_answer_cross_entropy(answer_logits, answer_ids)
-                    if sample["task"] == "maskcap":
-                        loss = loss * cfg["loss"]["lambda_cap_ce"]
-                    total_loss = total_loss + loss
-                    task_loss[sample["task"]] += float(loss.detach().cpu())
-                total_loss = total_loss / max(len(batch), 1)
+                batch_inputs, answer_mask = build_supervised_batch_inputs(processor, batch)
+                batch_inputs = move_inputs_to_device(batch_inputs, accelerator.device)
+                answer_mask = answer_mask.to(accelerator.device)
+
+                outputs = model(**batch_inputs, use_cache=False)
+                logits = outputs.logits[:, :-1, :]
+                labels = batch_inputs["input_ids"][:, 1:]
+                token_mask = answer_mask[:, 1:] & batch_inputs["attention_mask"][:, 1:].bool()
+
+                total_loss = compute_answer_cross_entropy_batch(logits, labels, token_mask)
+                batch_task = batch[0]["task"]
+                if batch_task == "maskcap":
+                    total_loss = total_loss * cfg["loss"]["lambda_cap_ce"]
+                task_loss[batch_task] = float(total_loss.detach().cpu())
                 accelerator.backward(total_loss)
                 optimizer.step()
                 scheduler.step()
@@ -149,7 +149,8 @@ def main() -> None:
 
             peak_alloc_mb = None
             peak_reserved_mb = None
-            should_collect_peak = torch.cuda.is_available() and (
+            collect_peak_memory = bool(cfg.get("logging", {}).get("collect_peak_memory", True))
+            should_collect_peak = collect_peak_memory and torch.cuda.is_available() and (
                 step % snapshot_every == 0 or (save_every > 0 and step % save_every == 0) or step < 10
             )
             if should_collect_peak:

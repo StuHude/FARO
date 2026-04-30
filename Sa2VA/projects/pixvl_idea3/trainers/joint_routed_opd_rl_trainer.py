@@ -3,20 +3,29 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
 from collections import defaultdict
+from datetime import timedelta
 from pathlib import Path
 
 import torch
-from accelerate import Accelerator, DistributedDataParallelKwargs, FullyShardedDataParallelPlugin
+import torch.nn.functional as F
+from accelerate import (
+    Accelerator,
+    DistributedDataParallelKwargs,
+    FullyShardedDataParallelPlugin,
+    InitProcessGroupKwargs,
+)
 from accelerate.utils import DistributedType
 
 from projects.pixvl_idea1.trainers.common import (
     build_dataloader,
     build_model_bundle,
     build_optimizer_and_scheduler,
-    build_prompt_and_answer_ids,
+    build_prompt_batch_inputs,
+    build_supervised_batch_inputs,
     clean_generated_text,
-    compute_answer_cross_entropy,
+    compute_answer_cross_entropy_per_sample,
     compute_answer_logprob_sums,
     compute_jsd_values,
     compute_reference_kl_values,
@@ -24,7 +33,6 @@ from projects.pixvl_idea1.trainers.common import (
     extract_adapter_state_dict,
     find_latest_adapter_checkpoint,
     find_latest_state_checkpoint,
-    forward_answer_logits,
     forward_answer_logits_batch,
     generate_answers,
     load_config,
@@ -41,7 +49,9 @@ from projects.pixvl_idea3.routing import (
     compute_geometry_reward,
     compute_relation_caption_reward,
     compute_relation_reward,
+    compute_semantic_coverage_calibration_reward,
     compute_semantic_caption_reward,
+    infer_atom_failure_route,
 )
 
 
@@ -51,7 +61,121 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def route_bucket_for_sample(sample: dict[str, object]) -> str:
+def routing_payload_for_sample(cfg: dict[str, object], sample: dict[str, object]) -> dict[str, object]:
+    runtime_key = "_runtime_routing_payload"
+    runtime_mode_key = "_runtime_routing_mode"
+    routing_mode = str((cfg.get("routing", {}) or {}).get("mode", "source_bucket"))
+    cached_mode = sample.get(runtime_mode_key)
+    cached_payload = sample.get(runtime_key)
+    if cached_mode == routing_mode and isinstance(cached_payload, dict):
+        return cached_payload
+
+    if routing_mode == "atom_conditioned":
+        payload = infer_atom_failure_route(sample, include_slice_tags=False)
+    else:
+        meta = sample.get("meta") or {}
+        if isinstance(meta, dict):
+            bucket = str(meta.get("failure_route", sample.get("route_bucket", "geometry")))
+        else:
+            bucket = str(sample.get("route_bucket", "geometry"))
+        payload = {
+            "failure_route": bucket,
+            "failure_route_reasons": ["precomputed_source_bucket"],
+            "route_weights": {
+                "semantic": 1.0 if bucket == "semantic" else 0.0,
+                "relation": 1.0 if bucket == "relation" else 0.0,
+                "geometry": 1.0 if bucket == "geometry" else 0.0,
+            },
+        }
+
+    sample[runtime_mode_key] = routing_mode
+    sample[runtime_key] = payload
+    return payload
+
+
+def route_bucket_for_sample(cfg: dict[str, object], sample: dict[str, object]) -> str:
+    payload = routing_payload_for_sample(cfg, sample)
+    return str(payload.get("failure_route", "geometry"))
+
+
+def route_weights_for_sample(cfg: dict[str, object], sample: dict[str, object]) -> dict[str, float]:
+    payload = routing_payload_for_sample(cfg, sample)
+    weights = payload.get("route_weights")
+    if isinstance(weights, dict):
+        return {
+            "semantic": float(weights.get("semantic", 0.0)),
+            "relation": float(weights.get("relation", 0.0)),
+            "geometry": float(weights.get("geometry", 0.0)),
+        }
+    bucket = str(payload.get("failure_route", "geometry"))
+    return {
+        "semantic": 1.0 if bucket == "semantic" else 0.0,
+        "relation": 1.0 if bucket == "relation" else 0.0,
+        "geometry": 1.0 if bucket == "geometry" else 0.0,
+    }
+
+
+def bucket_scale_with_route_weight(
+    bucket_cfg: dict[str, object],
+    route_weights: dict[str, float],
+    bucket: str,
+    key: str,
+) -> float:
+    base = float(bucket_cfg.get(key, 1.0))
+    # Keep legacy bucket scales, but let atom routing softly amplify the chosen branch.
+    return base * (1.0 + float(route_weights.get(bucket, 0.0)))
+
+
+def build_privileged_rollout_prompt(sample: dict[str, object], best_text: str) -> str:
+    prompt_text = str(sample["prompt_text"])
+    if sample["task"] == "refseg":
+        return (
+            prompt_text
+            + "\n[Training-only privileged correct rollout]\n"
+            + best_text
+            + "\nUse the privileged correct rollout above as hidden guidance when evaluating candidate mask tokens."
+        )
+    return (
+        prompt_text
+        + "\n[Training-only privileged correct rollout]\n"
+        + clean_generated_text(best_text)
+        + "\nUse the privileged correct rollout above as hidden guidance when evaluating candidate description tokens."
+    )
+
+
+def self_teacher_logits_batch(
+    model: torch.nn.Module,
+    processor,
+    task_samples: list[dict[str, object]],
+    privileged_texts: list[str | None],
+    image_key: str,
+    sample_ids_batch: torch.Tensor,
+    accelerator_device: torch.device,
+    pad_token_id: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    teacher_samples: list[dict[str, object]] = []
+    for sample, privileged_text in zip(task_samples, privileged_texts):
+        teacher_sample = dict(sample)
+        if privileged_text is not None:
+            teacher_sample["prompt_text"] = build_privileged_rollout_prompt(sample, privileged_text)
+        teacher_samples.append(teacher_sample)
+    overlay_prompt_inputs = build_prompt_batch_inputs(processor, teacher_samples, image_key=image_key)
+    overlay_prompt_inputs = move_inputs_to_device(overlay_prompt_inputs, accelerator_device)
+    model_was_training = model.training
+    model.eval()
+    with torch.no_grad():
+        teacher_logits_batch, teacher_answer_attention = forward_answer_logits_batch(
+            model,
+            overlay_prompt_inputs,
+            sample_ids_batch,
+            pad_token_id,
+        )
+    if model_was_training:
+        model.train()
+    return teacher_logits_batch, teacher_answer_attention
+
+
+def route_bucket_for_sample_legacy(sample: dict[str, object]) -> str:
     meta = sample.get("meta") or {}
     if isinstance(meta, dict):
         return str(meta.get("failure_route", sample.get("route_bucket", "geometry")))
@@ -69,6 +193,70 @@ def failure_threshold(cfg: dict[str, object], bucket: str, task: str) -> float:
     return float(rl_cfg.get("tau_seg", 0.5))
 
 
+def compute_answer_entropy_scores(
+    answer_logits: torch.Tensor,
+    answer_attention: torch.Tensor | None = None,
+) -> torch.Tensor:
+    probs = torch.softmax(answer_logits, dim=-1)
+    entropy = -(probs * probs.clamp_min(1e-8).log()).sum(dim=-1)
+    if answer_attention is not None:
+        entropy = entropy * answer_attention.to(entropy.dtype)
+        lengths = answer_attention.sum(dim=-1).clamp_min(1).to(entropy.dtype)
+    else:
+        lengths = torch.full(
+            (entropy.shape[0],),
+            entropy.shape[1],
+            dtype=entropy.dtype,
+            device=entropy.device,
+        ).clamp_min(1)
+    return entropy.sum(dim=-1) / lengths
+
+
+def minmax_normalize_tensor(values: torch.Tensor) -> torch.Tensor:
+    if values.numel() <= 1:
+        return torch.zeros_like(values)
+    vmin = values.min()
+    vmax = values.max()
+    denom = (vmax - vmin).clamp_min(1e-6)
+    return (values - vmin) / denom
+
+
+def triage_labels_from_stats(
+    cfg: dict[str, object],
+    reward_values: torch.Tensor,
+    nll_values: torch.Tensor,
+    entropy_values: torch.Tensor,
+) -> tuple[list[str], torch.Tensor]:
+    triage_cfg = (cfg.get("triage", {}) or {})
+    reward_weight = float(triage_cfg.get("reward_weight", 0.5))
+    nll_weight = float(triage_cfg.get("nll_weight", 0.25))
+    entropy_weight = float(triage_cfg.get("entropy_weight", 0.25))
+    clean_quantile = float(triage_cfg.get("clean_quantile", 0.35))
+    corrupted_quantile = float(triage_cfg.get("corrupted_quantile", 0.8))
+
+    reward_deficit = 1.0 - reward_values
+    q_values = (
+        reward_weight * minmax_normalize_tensor(reward_deficit)
+        + nll_weight * minmax_normalize_tensor(nll_values)
+        + entropy_weight * minmax_normalize_tensor(entropy_values)
+    )
+    if q_values.numel() <= 1:
+        return ["suspicious"], q_values
+
+    clean_tau = torch.quantile(q_values, clean_quantile)
+    corr_tau = torch.quantile(q_values, corrupted_quantile)
+    labels: list[str] = []
+    for q in q_values:
+        qv = float(q.item())
+        if qv <= float(clean_tau.item()):
+            labels.append("clean")
+        elif qv >= float(corr_tau.item()):
+            labels.append("corrupted")
+        else:
+            labels.append("suspicious")
+    return labels, q_values
+
+
 def routed_reward(
     cfg: dict[str, object],
     sample: dict[str, object],
@@ -77,7 +265,7 @@ def routed_reward(
     relation_confusers: dict[str, list[dict[str, object]]],
     similarity_scorer: SentenceSimilarityScorer,
 ) -> tuple[float, dict[str, float]]:
-    bucket = route_bucket_for_sample(sample)
+    bucket = route_bucket_for_sample(cfg, sample)
     reward_cfg = (cfg.get("routing", {}) or {}).get("rewards", {})
     if sample["task"] == "maskcap":
         if bucket == "relation":
@@ -89,13 +277,24 @@ def routed_reward(
                 relation_weight=float(reward_cfg.get("relation_caption", {}).get("relation_weight", 0.3)),
             )
         else:
-            details = compute_semantic_caption_reward(
-                clean_generated_text(sample_text),
-                sample["caption"],
-                similarity_scorer=similarity_scorer,
-                base_weight=float(reward_cfg.get("semantic", {}).get("base_weight", 0.75)),
-                keyword_weight=float(reward_cfg.get("semantic", {}).get("keyword_weight", 0.25)),
-            )
+            semantic_cfg = reward_cfg.get("semantic", {})
+            semantic_mode = str(semantic_cfg.get("mode", "base_keyword"))
+            if semantic_mode == "coverage_calibration":
+                details = compute_semantic_coverage_calibration_reward(
+                    clean_generated_text(sample_text),
+                    sample["caption"],
+                    rec_weight=float(semantic_cfg.get("rec_weight", 0.2)),
+                    pos_weight=float(semantic_cfg.get("pos_weight", 0.45)),
+                    neg_weight=float(semantic_cfg.get("neg_weight", 0.35)),
+                )
+            else:
+                details = compute_semantic_caption_reward(
+                    clean_generated_text(sample_text),
+                    sample["caption"],
+                    similarity_scorer=similarity_scorer,
+                    base_weight=float(semantic_cfg.get("base_weight", 0.75)),
+                    keyword_weight=float(semantic_cfg.get("keyword_weight", 0.25)),
+                )
         return details["total"], details
 
     parsed_codes = dataset.codec.text_to_codes(sample_text)
@@ -126,10 +325,52 @@ def routed_reward(
     return details["total"], details
 
 
+def ensure_gpu_reserve_buffers(
+    reserve_buffers: list[torch.Tensor],
+    *,
+    target_gb: float,
+    headroom_gb: float,
+    device: torch.device,
+) -> None:
+    if not torch.cuda.is_available() or device.type != "cuda":
+        return
+    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+    used_bytes = total_bytes - free_bytes
+    target_bytes = int(target_gb * (1024 ** 3))
+    headroom_bytes = int(headroom_gb * (1024 ** 3))
+    need_bytes = target_bytes - used_bytes
+    max_alloc = free_bytes - headroom_bytes
+    if need_bytes <= 0 or max_alloc <= 0:
+        return
+    alloc_bytes = min(need_bytes, max_alloc)
+    chunk_bytes = 256 * 1024 * 1024
+    allocated_total = 0
+    while alloc_bytes > 0:
+        current = min(chunk_bytes, alloc_bytes)
+        reserve_buffers.append(torch.zeros(current, dtype=torch.uint8, device=device))
+        alloc_bytes -= current
+        allocated_total += current
+    if allocated_total > 0:
+        print(
+            json.dumps(
+                {
+                    "reserve_mb": round(allocated_total / (1024 ** 2), 2),
+                    "target_gb": target_gb,
+                    "headroom_gb": headroom_gb,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     seed_everything(cfg["seed"])
+    if torch.cuda.is_available():
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        torch.cuda.set_device(local_rank)
 
     fsdp_plugin = None
     if cfg.get("memory_optim", {}).get("fsdp", {}).get("enabled", False):
@@ -146,14 +387,16 @@ def main() -> None:
         )
 
     ddp_kwargs = DistributedDataParallelKwargs(
-        find_unused_parameters=True,
+        find_unused_parameters=False,
         static_graph=False,
+        broadcast_buffers=False,
     )
+    init_pg_kwargs = InitProcessGroupKwargs(timeout=timedelta(hours=2))
     accelerator = Accelerator(
         gradient_accumulation_steps=cfg["optimizer"]["grad_accum_steps"],
-        mixed_precision="bf16" if torch.cuda.is_available() else "no",
+        mixed_precision="no",
         fsdp_plugin=fsdp_plugin,
-        kwargs_handlers=[ddp_kwargs],
+        kwargs_handlers=[ddp_kwargs, init_pg_kwargs],
     )
     output_dir = Path(cfg["checkpoint"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -174,6 +417,8 @@ def main() -> None:
     model, processor = build_model_bundle(cfg, trainable=True, adapter_path=adapter_path)
     teacher_model, _ = build_model_bundle(cfg, trainable=False, adapter_path=cfg["teacher"]["adapter_path"])
     reference_model, _ = build_model_bundle(cfg, trainable=False, adapter_path=cfg["reference"]["adapter_path"])
+    teacher_model.to(accelerator.device)
+    reference_model.to(accelerator.device)
 
     dataloader, batch_sampler = build_dataloader(cfg, resume_steps=resume_steps, sampler_state=sampler_state)
     relation_confusers = build_relation_confuser_map(
@@ -181,8 +426,8 @@ def main() -> None:
         max_confusers=int(cfg.get("routing", {}).get("max_confusers", 16)),
     )
     optimizer, scheduler = build_optimizer_and_scheduler(model, cfg)
-    model, teacher_model, reference_model, optimizer, dataloader, scheduler = accelerator.prepare(
-        model, teacher_model, reference_model, optimizer, dataloader, scheduler
+    model, optimizer, dataloader, scheduler = accelerator.prepare(
+        model, optimizer, dataloader, scheduler
     )
     teacher_model.eval()
     reference_model.eval()
@@ -205,6 +450,9 @@ def main() -> None:
     log_every = int(cfg.get("logging", {}).get("log_every", 1))
     snapshot_every = int(cfg.get("logging", {}).get("snapshot_every", 10))
     save_every = int(cfg["checkpoint"].get("save_every", 0))
+    reserve_buffers: list[torch.Tensor] = []
+    reserve_target_gb = float(cfg.get("memory_optim", {}).get("gpu_reserve_target_gb", 0.0))
+    reserve_headroom_gb = float(cfg.get("memory_optim", {}).get("gpu_reserve_headroom_gb", 8.0))
 
     model.train()
     step = resume_steps
@@ -215,48 +463,53 @@ def main() -> None:
             step_bucket_rewards: dict[str, list[float]] = defaultdict(list)
             step_bucket_failures: dict[str, int] = defaultdict(int)
             step_bucket_counts: dict[str, int] = defaultdict(int)
+            step_triage_counts: dict[str, int] = defaultdict(int)
+            step_triage_q_values: list[float] = []
             with accelerator.accumulate(model):
-                total_loss = 0.0
-                for sample in batch:
-                    bucket = route_bucket_for_sample(sample)
-                    bucket_cfg = cfg.get("routing", {}).get("buckets", {}).get(bucket, {})
-                    prompt_inputs, answer_ids = build_prompt_and_answer_ids(
-                        processor,
-                        sample["image"],
-                        sample["prompt_text"],
-                        sample["answer_text"],
-                    )
+                total_loss = torch.zeros((), device=accelerator.device)
+                batch_inputs, answer_mask = build_supervised_batch_inputs(processor, batch)
+                batch_inputs = move_inputs_to_device(batch_inputs, accelerator.device)
+                answer_mask = answer_mask.to(accelerator.device)
+                outputs = model(**batch_inputs, use_cache=False)
+                logits = outputs.logits[:, :-1, :]
+                labels = batch_inputs["input_ids"][:, 1:]
+                token_mask = answer_mask[:, 1:] & batch_inputs["attention_mask"][:, 1:].bool()
+                ce_losses = compute_answer_cross_entropy_per_sample(logits, labels, token_mask)
+                task_to_indices: dict[str, list[int]] = defaultdict(list)
+                for sample_idx_in_batch, sample in enumerate(batch):
+                    task_to_indices[str(sample["task"])].append(sample_idx_in_batch)
+
+                task_count_tensor = torch.tensor(
+                    [
+                        len(task_to_indices.get("refseg", [])),
+                        len(task_to_indices.get("maskcap", [])),
+                    ],
+                    dtype=torch.int64,
+                    device=accelerator.device,
+                )
+                if accelerator.num_processes > 1:
+                    gathered_task_counts = accelerator.gather(task_count_tensor).view(accelerator.num_processes, -1)
+                    if not torch.equal(gathered_task_counts, gathered_task_counts[:1].expand_as(gathered_task_counts)):
+                        raise RuntimeError(
+                            f"Per-rank task counts diverged: {gathered_task_counts.detach().cpu().tolist()}"
+                        )
+
+                for task in ("refseg", "maskcap"):
+                    batch_indices = task_to_indices.get(task, [])
+                    if not batch_indices:
+                        continue
+                    task_samples = [batch[idx] for idx in batch_indices]
+                    group_size = int(cfg["rl"]["group_size"][task])
+
+                    prompt_inputs = build_prompt_batch_inputs(processor, task_samples, image_key="image")
                     prompt_inputs = move_inputs_to_device(prompt_inputs, accelerator.device)
-                    answer_ids = answer_ids.to(accelerator.device)
-                    ce_logits = forward_answer_logits(model, prompt_inputs, answer_ids)
-                    ce_loss = compute_answer_cross_entropy(ce_logits, answer_ids)
-                    ce_scale = float(bucket_cfg.get("ce_scale", 1.0))
-                    if sample["task"] == "maskcap":
-                        ce_loss = ce_loss * float(cfg["loss"].get("lambda_cap_ce", 1.0))
-
-                    rewards = []
-                    group_size = cfg["rl"]["group_size"][sample["task"]]
-                    max_group_size = max(cfg["rl"]["group_size"].values())
-                    effective_mask = torch.tensor(
-                        [1.0 if sample_idx < group_size else 0.0 for sample_idx in range(max_group_size)],
-                        dtype=torch.float32,
-                        device=accelerator.device,
-                    )
-
-                    overlay_prompt_inputs, _ = build_prompt_and_answer_ids(
-                        processor,
-                        sample["overlay_image"],
-                        sample["prompt_text"],
-                        sample["answer_text"],
-                    )
-                    overlay_prompt_inputs = move_inputs_to_device(overlay_prompt_inputs, accelerator.device)
 
                     sample_ids_batch, sample_texts = generate_answers(
                         accelerator.unwrap_model(model),
                         processor,
                         prompt_inputs,
-                        cfg["generation"][sample["task"]],
-                        num_return_sequences=max_group_size,
+                        cfg["generation"][task],
+                        num_return_sequences=group_size,
                     )
                     sample_ids_batch = sample_ids_batch.to(accelerator.device)
                     student_logits_batch, answer_attention = forward_answer_logits_batch(
@@ -271,11 +524,18 @@ def main() -> None:
                         answer_attention,
                     )
 
-                    fail_mask: list[float] = []
-                    for sample_idx, sample_text in enumerate(sample_texts):
-                        effective_scale = float(effective_mask[sample_idx].item())
-                        if effective_scale:
-                            reward_value, reward_details = routed_reward(
+                    per_sample_rewards: list[list[float]] = []
+                    per_sample_fail_masks: list[list[float]] = []
+                    per_sample_privileged_texts: list[str | None] = []
+                    for local_idx, global_idx in enumerate(batch_indices):
+                        sample = batch[global_idx]
+                        bucket = route_bucket_for_sample(cfg, sample)
+                        start = local_idx * group_size
+                        end = start + group_size
+                        rewards: list[float] = []
+                        fail_mask: list[float] = []
+                        for sample_offset, sample_text in enumerate(sample_texts[start:end]):
+                            reward_value, _ = routed_reward(
                                 cfg,
                                 sample,
                                 sample_text,
@@ -283,39 +543,106 @@ def main() -> None:
                                 relation_confusers,
                                 similarity_scorer,
                             )
-                            rewards.append(reward_value)
+                            rewards.append(float(reward_value))
                             step_bucket_rewards[bucket].append(float(reward_value))
                             threshold = failure_threshold(cfg, bucket, sample["task"])
                             fail = reward_value < threshold
                             if fail:
                                 step_bucket_failures[bucket] += 1
                             step_bucket_counts[bucket] += 1
-                        else:
-                            reward_value = 0.0
-                            reward_details = {}
-                            fail = False
-                        fail_mask.append(1.0 if (effective_scale and fail) else 0.0)
+                            fail_mask.append(1.0 if fail else 0.0)
+                        per_sample_rewards.append(rewards)
+                        per_sample_fail_masks.append(fail_mask)
+                        per_sample_privileged_texts.append(str(sample["answer_text"]))
 
-                    if cfg["loss"].get("lambda_opd", 0.0) > 0.0 and (
-                        cfg.get("opd", {}).get("all_sample_distill", False) or any(value > 0.0 for value in fail_mask)
-                    ):
-                        with torch.no_grad():
-                            teacher_logits_batch, _ = forward_answer_logits_batch(
-                                teacher_model,
-                                overlay_prompt_inputs,
+                    triage_enabled = bool((cfg.get("triage", {}) or {}).get("enabled", False))
+                    teacher_mode = str((cfg.get("opd", {}) or {}).get("teacher_mode", "frozen_overlay"))
+                    teacher_image_key = str((cfg.get("opd", {}) or {}).get("teacher_image_key", "overlay_image"))
+                    need_teacher_branch = triage_enabled or float(cfg["loss"].get("lambda_opd", 0.0)) > 0.0
+                    teacher_logits_batch = None
+                    if need_teacher_branch:
+                        if teacher_mode == "self_privileged_rollout":
+                            teacher_logits_batch, _ = self_teacher_logits_batch(
+                                accelerator.unwrap_model(model),
+                                processor,
+                                task_samples,
+                                per_sample_privileged_texts,
+                                teacher_image_key,
                                 sample_ids_batch,
+                                accelerator.device,
                                 pad_token_id,
                             )
+                        else:
+                            overlay_prompt_inputs = build_prompt_batch_inputs(processor, task_samples, image_key="overlay_image")
+                            overlay_prompt_inputs = move_inputs_to_device(overlay_prompt_inputs, accelerator.device)
+                            with torch.no_grad():
+                                teacher_logits_batch, _ = forward_answer_logits_batch(
+                                    teacher_model,
+                                    overlay_prompt_inputs,
+                                    sample_ids_batch,
+                                    pad_token_id,
+                                )
+
+                    if triage_enabled:
+                        reward_tensor = torch.tensor(
+                            [sum(rewards) / max(len(rewards), 1) for rewards in per_sample_rewards],
+                            dtype=torch.float32,
+                            device=accelerator.device,
+                        )
+                        sample_nlls: list[torch.Tensor] = []
+                        sample_entropies: list[torch.Tensor] = []
+                        for local_idx, _global_idx in enumerate(batch_indices):
+                            start = local_idx * group_size
+                            end = start + group_size
+                            lengths = answer_attention[start:end].sum(dim=-1).clamp_min(1).to(logprob_sums.dtype)
+                            seq_nll = (-logprob_sums[start:end] / lengths).mean()
+                            assert teacher_logits_batch is not None
+                            seq_entropy = compute_answer_entropy_scores(
+                                teacher_logits_batch[start:end],
+                                answer_attention[start:end],
+                            ).mean()
+                            sample_nlls.append(seq_nll)
+                            sample_entropies.append(seq_entropy)
+                        triage_labels, triage_q_values = triage_labels_from_stats(
+                            cfg,
+                            reward_tensor,
+                            torch.stack(sample_nlls),
+                            torch.stack(sample_entropies),
+                        )
+                        step_triage_q_values.extend(float(x.item()) for x in triage_q_values)
+                        gated_masks: list[list[float]] = []
+                        for triage_label, fail_mask in zip(triage_labels, per_sample_fail_masks):
+                            step_triage_counts[triage_label] += 1
+                            if triage_label == "suspicious":
+                                gated_masks.append([1.0] * len(fail_mask))
+                            else:
+                                gated_masks.append([0.0] * len(fail_mask))
+                        per_sample_fail_masks = gated_masks
+
+                    need_opd_local = (
+                        cfg["loss"].get("lambda_opd", 0.0) > 0.0
+                        and any(any(mask_value > 0.0 for mask_value in fail_mask) for fail_mask in per_sample_fail_masks)
+                    )
+                    if need_opd_local:
                         teacher_weights = compute_teacher_confidence_weights_batch(teacher_logits_batch)
-                        opd_values = compute_jsd_values(
+                        opd_values_all = compute_jsd_values(
                             student_logits_batch,
                             teacher_logits_batch,
                             teacher_weights,
                             answer_attention,
                         )
                     else:
-                        opd_values = torch.zeros(max_group_size, dtype=torch.float32, device=accelerator.device)
-                    opd_mask = torch.tensor(fail_mask, dtype=torch.float32, device=accelerator.device)
+                        opd_values_all = torch.zeros(sample_ids_batch.shape[0], dtype=torch.float32, device=accelerator.device)
+
+                    overlay_prompt_inputs = build_prompt_batch_inputs(processor, task_samples, image_key="overlay_image")
+                    overlay_prompt_inputs = move_inputs_to_device(overlay_prompt_inputs, accelerator.device)
+                    with torch.no_grad():
+                        teacher_logits_batch, _ = forward_answer_logits_batch(
+                            teacher_model,
+                            overlay_prompt_inputs,
+                            sample_ids_batch,
+                            pad_token_id,
+                        )
 
                     with torch.no_grad():
                         ref_logits_batch, _ = forward_answer_logits_batch(
@@ -324,35 +651,50 @@ def main() -> None:
                             sample_ids_batch,
                             pad_token_id,
                         )
-                    kl_values = compute_reference_kl_values(
+                    kl_values_all = compute_reference_kl_values(
                         student_logits_batch,
                         ref_logits_batch,
                         answer_attention,
                     )
 
-                    advantages = normalize_rewards(rewards).to(accelerator.device)
-                    if max_group_size > group_size:
-                        pad = torch.zeros(max_group_size - group_size, dtype=advantages.dtype, device=advantages.device)
-                        advantages = torch.cat([advantages, pad], dim=0)
-                    rl_loss = torch.stack(
-                        [-advantage * logprob for advantage, logprob in zip(advantages, logprob_sums)]
-                    ).sum() / effective_mask.sum().clamp_min(1.0)
-                    opd_loss = (opd_values * opd_mask).sum() / opd_mask.sum().clamp_min(1.0)
-                    kl_loss = (kl_values * effective_mask).sum() / effective_mask.sum().clamp_min(1.0)
+                    for local_idx, global_idx in enumerate(batch_indices):
+                        sample = batch[global_idx]
+                        bucket = route_bucket_for_sample(cfg, sample)
+                        route_weights = route_weights_for_sample(cfg, sample)
+                        bucket_cfg = cfg.get("routing", {}).get("buckets", {}).get(bucket, {})
+                        ce_loss = ce_losses[global_idx]
+                        ce_scale = bucket_scale_with_route_weight(bucket_cfg, route_weights, bucket, "ce_scale")
+                        if sample["task"] == "maskcap":
+                            ce_loss = ce_loss * float(cfg["loss"].get("lambda_cap_ce", 1.0))
 
-                    rl_scale = float(bucket_cfg.get("rl_scale", 1.0))
-                    opd_scale = float(bucket_cfg.get("opd_scale", 1.0))
-                    if sample["task"] == "refseg":
-                        base_rl_lambda = float(cfg["loss"]["lambda_rl_seg"])
-                    else:
-                        base_rl_lambda = float(cfg["loss"]["lambda_rl_cap"])
-                    loss = (
-                        float(cfg["loss"]["lambda_ce"]) * ce_scale * ce_loss
-                        + base_rl_lambda * rl_scale * rl_loss
-                        + float(cfg["loss"].get("lambda_opd", 0.0)) * opd_scale * opd_loss
-                        + float(cfg["loss"]["beta_kl"]) * kl_loss
-                    )
-                    total_loss = total_loss + loss
+                        start = local_idx * group_size
+                        end = start + group_size
+                        advantages = normalize_rewards(per_sample_rewards[local_idx]).to(accelerator.device)
+                        logprob_slice = logprob_sums[start:end]
+                        opd_values = opd_values_all[start:end]
+                        kl_values = kl_values_all[start:end]
+                        opd_mask = torch.tensor(
+                            per_sample_fail_masks[local_idx],
+                            dtype=torch.float32,
+                            device=accelerator.device,
+                        )
+                        rl_loss = -(advantages * logprob_slice).mean()
+                        opd_loss = (opd_values * opd_mask).sum() / opd_mask.sum().clamp_min(1.0)
+                        kl_loss = kl_values.mean()
+
+                        rl_scale = bucket_scale_with_route_weight(bucket_cfg, route_weights, bucket, "rl_scale")
+                        opd_scale = bucket_scale_with_route_weight(bucket_cfg, route_weights, bucket, "opd_scale")
+                        if sample["task"] == "refseg":
+                            base_rl_lambda = float(cfg["loss"]["lambda_rl_seg"])
+                        else:
+                            base_rl_lambda = float(cfg["loss"]["lambda_rl_cap"])
+                        loss = (
+                            float(cfg["loss"]["lambda_ce"]) * ce_scale * ce_loss
+                            + base_rl_lambda * rl_scale * rl_loss
+                            + float(cfg["loss"].get("lambda_opd", 0.0)) * opd_scale * opd_loss
+                            + float(cfg["loss"]["beta_kl"]) * kl_loss
+                        )
+                        total_loss = total_loss + loss
 
                 total_loss = total_loss / max(len(batch), 1)
                 accelerator.backward(total_loss)
@@ -364,6 +706,13 @@ def main() -> None:
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                if reserve_target_gb > 0.0:
+                    ensure_gpu_reserve_buffers(
+                        reserve_buffers,
+                        target_gb=reserve_target_gb,
+                        headroom_gb=reserve_headroom_gb,
+                        device=accelerator.device,
+                    )
 
             if accelerator.is_main_process:
                 step_metrics = {"step": step, "loss": step_loss_value}
@@ -373,6 +722,11 @@ def main() -> None:
                         len(step_bucket_rewards[bucket]), 1
                     )
                     step_metrics[f"{bucket}_failure_rate"] = step_bucket_failures[bucket] / count
+                for triage_label in ("clean", "suspicious", "corrupted"):
+                    if triage_label in step_triage_counts:
+                        step_metrics[f"triage_{triage_label}_count"] = step_triage_counts[triage_label]
+                if step_triage_q_values:
+                    step_metrics["triage_mean_q"] = sum(step_triage_q_values) / len(step_triage_q_values)
                 metrics["steps"].append(step_metrics)
                 if step % log_every == 0:
                     print(json.dumps(step_metrics, ensure_ascii=False), flush=True)

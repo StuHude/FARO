@@ -48,6 +48,29 @@ SEMANTIC_KEYWORDS = {
     "face",
 }
 
+ACTION_KEYWORDS = {
+    "standing",
+    "sitting",
+    "lying",
+    "holding",
+    "wearing",
+    "walking",
+    "riding",
+    "flying",
+    "parked",
+    "leaning",
+    "looking",
+    "eating",
+    "driving",
+    "resting",
+}
+
+STOPWORDS = {
+    "a", "an", "the", "this", "that", "these", "those", "is", "are", "was", "were",
+    "with", "of", "in", "on", "at", "to", "for", "from", "and", "or", "by", "as",
+    "it", "its", "their", "his", "her", "there", "here", "region", "object",
+}
+
 RELATION_KEYWORDS = [
     "left",
     "right",
@@ -65,6 +88,28 @@ RELATION_KEYWORDS = [
     "near",
     "beside",
     "not",
+]
+
+COUNT_ORDINAL_KEYWORDS = [
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "first",
+    "second",
+    "third",
+    "fourth",
+    "fifth",
+    "last",
+]
+
+NEGATION_KEYWORDS = [
+    "not",
+    "no",
+    "none",
+    "without",
+    "except",
 ]
 
 MASKCAP_SOURCES = {
@@ -107,6 +152,168 @@ def extract_relation_hits(text: str | None) -> list[str]:
     if not normalized:
         return []
     return sorted(keyword for keyword in RELATION_KEYWORDS if keyword in normalized)
+
+
+def extract_condition_atoms(text: str | None) -> dict[str, list[str]]:
+    normalized = normalize_text(text)
+    tokens = re.findall(r"[a-z0-9]+", normalized)
+    token_set = set(tokens)
+    slots = extract_semantic_slots(text)
+    relation_atoms = set(extract_relation_hits(text))
+    relation_atoms.update(word for word in COUNT_ORDINAL_KEYWORDS if word in token_set)
+    relation_atoms.update(word for word in NEGATION_KEYWORDS if word in token_set)
+    if any(action in slots.get("action", []) for action in {"holding", "wearing", "riding"}):
+        relation_atoms.update(action for action in slots.get("action", []) if action in {"holding", "wearing", "riding"})
+    slots["relation"] = sorted(relation_atoms)
+    return slots
+
+
+def compute_atom_route_weights(
+    record: dict[str, Any],
+    *,
+    atom_weight: float = 0.4,
+    geometry_weight: float = 0.35,
+    tau: float = 2.0,
+    epsilon: float = 0.05,
+) -> dict[str, Any]:
+    text = record.get("query") or record.get("caption") or ""
+    atoms = extract_condition_atoms(text)
+
+    semantic_score = 0.0
+    semantic_score += 0.45 if atoms.get("category") else 0.0
+    semantic_score += min(len(atoms.get("attribute", [])), 3) * 0.12
+    semantic_score += min(len(atoms.get("part", [])), 2) * 0.10
+    semantic_score += min(len(atoms.get("action", [])), 2) * 0.06
+
+    relation_score = 0.0
+    relation_atoms = atoms.get("relation", [])
+    relation_score += min(len(relation_atoms), 4) * 0.18
+    if any(atom in relation_atoms for atom in NEGATION_KEYWORDS):
+        relation_score += 0.15
+    if any(atom in relation_atoms for atom in COUNT_ORDINAL_KEYWORDS):
+        relation_score += 0.10
+
+    meta = record.get("meta") or {}
+    area_ratio = float(meta.get("mask_area_ratio", 0.0) or 0.0)
+    boundary_complexity = float(meta.get("mask_boundary_complexity", 0.0) or 0.0)
+    geometry_score = 0.15
+    if record.get("task") == "refseg":
+        geometry_score += 0.35 if 0.0 < area_ratio <= 0.035 else 0.0
+        geometry_score += 0.30 if boundary_complexity >= 5.5 else 0.0
+        geometry_score += 0.15 if not relation_atoms else 0.0
+
+    # Keep routing strictly sample-conditioned: only use signals present in the
+    # current sample itself (text atoms + geometry metadata), not dataset source.
+    semantic_deficit = atom_weight * semantic_score + epsilon
+    relation_deficit = atom_weight * relation_score + epsilon
+    geometry_deficit = geometry_weight * geometry_score + epsilon
+
+    deficit_tensor = torch.tensor(
+        [semantic_deficit, relation_deficit, geometry_deficit],
+        dtype=torch.float32,
+    )
+    weight_tensor = torch.softmax(tau * deficit_tensor, dim=0)
+    weights = {
+        "semantic": float(weight_tensor[0].item()),
+        "relation": float(weight_tensor[1].item()),
+        "geometry": float(weight_tensor[2].item()),
+    }
+    bucket = max(weights, key=weights.get)
+    return {
+        "bucket": bucket,
+        "weights": weights,
+        "atoms": atoms,
+        "deficits": {
+            "semantic": float(semantic_deficit),
+            "relation": float(relation_deficit),
+            "geometry": float(geometry_deficit),
+        },
+    }
+
+
+def infer_atom_failure_route(
+    record: dict[str, Any],
+    *,
+    include_slice_tags: bool = True,
+) -> dict[str, Any]:
+    routed = compute_atom_route_weights(record)
+    bucket = routed["bucket"]
+    tags = derive_slice_tags(
+        record,
+        geometry_complexity_threshold=5.5,
+    ) if include_slice_tags else []
+    if include_slice_tags and bucket not in tags:
+        tags.append(bucket)
+    return {
+        "failure_route": bucket,
+        "failure_route_reasons": ["atom_conditioned_route"],
+        "failure_slice_tags": sorted(set(tags)),
+        "route_weights": routed["weights"],
+        "condition_atoms": routed["atoms"],
+        "route_deficits": routed["deficits"],
+    }
+
+
+def extract_semantic_slots(text: str | None) -> dict[str, list[str]]:
+    normalized = normalize_text(text)
+    tokens = re.findall(r"[a-z0-9]+", normalized)
+    token_set = set(tokens)
+    attributes = sorted(token for token in SEMANTIC_KEYWORDS if token in token_set)
+    actions = sorted(token for token in ACTION_KEYWORDS if token in token_set)
+    relation_tokens = sorted(token for token in RELATION_KEYWORDS if token in normalized)
+    reserved = set(attributes) | set(actions) | set(relation_tokens) | STOPWORDS
+    category = [token for token in tokens if token not in reserved]
+    dedup_category: list[str] = []
+    for token in category:
+        if token not in dedup_category:
+            dedup_category.append(token)
+        if len(dedup_category) >= 3:
+            break
+    parts = [token for token in attributes if token in {"hat", "shirt", "hand", "arm", "leg", "wheel", "door", "window", "tail", "ear", "face"}]
+    attrs = [token for token in attributes if token not in parts]
+    return {
+        "category": dedup_category,
+        "attribute": attrs,
+        "part": parts,
+        "action": actions,
+        "relation": relation_tokens,
+    }
+
+
+def slot_recall(pred_slots: dict[str, list[str]], ref_slots: dict[str, list[str]]) -> float:
+    ref_atoms = []
+    pred_atoms = set()
+    for key in ("category", "attribute", "part", "action", "relation"):
+        ref_atoms.extend(ref_slots.get(key, []))
+        pred_atoms.update(pred_slots.get(key, []))
+    ref_atoms = list(dict.fromkeys(ref_atoms))
+    if not ref_atoms:
+        return 1.0
+    hits = sum(1 for atom in ref_atoms if atom in pred_atoms)
+    return hits / len(ref_atoms)
+
+
+def slot_precision(pred_slots: dict[str, list[str]], ref_slots: dict[str, list[str]]) -> float:
+    pred_atoms = []
+    ref_atoms = set()
+    for key in ("category", "attribute", "part", "action", "relation"):
+        pred_atoms.extend(pred_slots.get(key, []))
+        ref_atoms.update(ref_slots.get(key, []))
+    pred_atoms = list(dict.fromkeys(pred_atoms))
+    if not pred_atoms:
+        return 1.0
+    hits = sum(1 for atom in pred_atoms if atom in ref_atoms)
+    return hits / len(pred_atoms)
+
+
+def category_anchor_score(pred_slots: dict[str, list[str]], ref_slots: dict[str, list[str]]) -> float:
+    pred = set(pred_slots.get("category", []))
+    ref = set(ref_slots.get("category", []))
+    if not pred and not ref:
+        return 1.0
+    if not pred or not ref:
+        return 0.0
+    return 1.0 if (pred & ref) else 0.0
 
 
 def mask_area_ratio(mask_obj: dict[str, Any]) -> float:
@@ -315,6 +522,29 @@ def compute_semantic_caption_reward(
         "bucket": "semantic",
         "base": float(base),
         "keyword": float(keyword),
+        "total": float(total),
+    }
+
+
+def compute_semantic_coverage_calibration_reward(
+    prediction: str,
+    reference: str,
+    *,
+    rec_weight: float = 0.2,
+    pos_weight: float = 0.45,
+    neg_weight: float = 0.35,
+) -> dict[str, float]:
+    pred_slots = extract_semantic_slots(prediction)
+    ref_slots = extract_semantic_slots(reference)
+    rec = category_anchor_score(pred_slots, ref_slots)
+    coverage = slot_recall(pred_slots, ref_slots)
+    calibration = slot_precision(pred_slots, ref_slots)
+    total = rec_weight * rec + pos_weight * coverage + neg_weight * calibration
+    return {
+        "bucket": "semantic",
+        "recognition": float(rec),
+        "coverage": float(coverage),
+        "calibration": float(calibration),
         "total": float(total),
     }
 

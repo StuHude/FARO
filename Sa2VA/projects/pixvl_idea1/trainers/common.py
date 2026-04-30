@@ -78,6 +78,8 @@ def build_model_bundle(
         model_cfg["processor_name_or_path"],
         trust_remote_code=model_cfg.get("trust_remote_code", True),
     )
+    if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
+        processor.tokenizer.padding_side = "left"
     attn_backend = resolve_attention_backend(model_cfg.get("attn_implementation", "flash_attention_2"))
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         base_model,
@@ -233,6 +235,93 @@ def build_prompt_and_answer_ids(
     return prompt_inputs, answer_ids
 
 
+def build_prompt_batch_inputs(
+    processor: Any,
+    samples: list[dict[str, Any]],
+    *,
+    image_key: str = "image",
+) -> dict[str, torch.Tensor]:
+    prompt_texts = [
+        render_chat_text(processor, sample["prompt_text"], None, add_generation_prompt=True)
+        for sample in samples
+    ]
+    images = [sample[image_key] for sample in samples]
+    prompt_inputs = processor(
+        text=prompt_texts,
+        images=images,
+        padding=True,
+        return_tensors="pt",
+    )
+    return {key: value for key, value in prompt_inputs.items() if isinstance(value, torch.Tensor)}
+
+
+def build_supervised_batch_inputs(
+    processor: Any,
+    samples: list[dict[str, Any]],
+) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    prompt_texts = [
+        render_chat_text(processor, sample["prompt_text"], None, add_generation_prompt=True)
+        for sample in samples
+    ]
+    full_texts = [
+        render_chat_text(processor, sample["prompt_text"], sample["answer_text"], add_generation_prompt=False)
+        for sample in samples
+    ]
+    images = [sample["image"] for sample in samples]
+
+    prompt_inputs = processor(
+        text=prompt_texts,
+        images=images,
+        padding=True,
+        return_tensors="pt",
+    )
+    full_inputs = processor(
+        text=full_texts,
+        images=images,
+        padding=True,
+        return_tensors="pt",
+    )
+
+    prompt_attention = prompt_inputs["attention_mask"]
+    full_attention = full_inputs["attention_mask"]
+    prompt_lens = prompt_attention.sum(dim=1)
+    full_lens = full_attention.sum(dim=1)
+
+    answer_mask = torch.zeros_like(full_inputs["input_ids"], dtype=torch.bool)
+    for idx in range(full_inputs["input_ids"].shape[0]):
+        start = int(prompt_lens[idx].item())
+        end = int(full_lens[idx].item())
+        if end > start:
+            answer_mask[idx, start:end] = True
+
+    batch_inputs = {key: value for key, value in full_inputs.items() if isinstance(value, torch.Tensor)}
+    return batch_inputs, answer_mask
+
+
+def compute_answer_cross_entropy_batch(
+    answer_logits: torch.Tensor,
+    labels: torch.Tensor,
+    token_mask: torch.Tensor,
+) -> torch.Tensor:
+    log_probs = F.log_softmax(answer_logits, dim=-1)
+    nll = -log_probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+    loss = (nll * token_mask.to(nll.dtype)).sum() / token_mask.sum().clamp_min(1).to(nll.dtype)
+    return loss
+
+
+def compute_answer_cross_entropy_per_sample(
+    answer_logits: torch.Tensor,
+    labels: torch.Tensor,
+    token_mask: torch.Tensor,
+) -> torch.Tensor:
+    log_probs = F.log_softmax(answer_logits, dim=-1)
+    nll = -log_probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+    token_mask_f = token_mask.to(nll.dtype)
+    token_sums = (nll * token_mask_f).sum(dim=1)
+    token_counts = token_mask_f.sum(dim=1).clamp_min(1.0)
+    return token_sums / token_counts
+
+
 def move_inputs_to_device(inputs: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
     return {key: value.to(device) for key, value in inputs.items()}
 
@@ -259,22 +348,38 @@ def forward_answer_logits(
     return answer_logits
 
 
+def _repeat_segmented_tensor(values: torch.Tensor, grid_thw: torch.Tensor, repeats: int) -> torch.Tensor:
+    counts = [int(torch.prod(item).item()) for item in grid_thw]
+    chunks = torch.split(values, counts, dim=0)
+    repeated_chunks = []
+    for chunk in chunks:
+        repeated_chunks.extend([chunk] * repeats)
+    return torch.cat(repeated_chunks, dim=0)
+
+
 def _repeat_prompt_inputs(prompt_inputs: dict[str, torch.Tensor], repeats: int) -> dict[str, torch.Tensor]:
+    if repeats < 1:
+        raise ValueError(f"repeats must be >= 1, got {repeats}")
+    prompt_batch = prompt_inputs["input_ids"].shape[0]
+    image_grid_thw = prompt_inputs.get("image_grid_thw")
+    video_grid_thw = prompt_inputs.get("video_grid_thw")
     repeated: dict[str, torch.Tensor] = {}
     for key, value in prompt_inputs.items():
-        if value.shape[0] == repeats:
-            repeated[key] = value
-        elif value.shape[0] == 1:
-            repeat_dims = [repeats] + [1] * (value.dim() - 1)
-            repeated[key] = value.repeat(*repeat_dims)
-        elif key == "pixel_values" and prompt_inputs.get("image_grid_thw") is not None and prompt_inputs["image_grid_thw"].shape[0] == 1:
-            repeat_dims = [repeats] + [1] * (value.dim() - 1)
-            repeated[key] = value.repeat(*repeat_dims)
-        elif key == "pixel_values_videos" and prompt_inputs.get("video_grid_thw") is not None and prompt_inputs["video_grid_thw"].shape[0] == 1:
-            repeat_dims = [repeats] + [1] * (value.dim() - 1)
-            repeated[key] = value.repeat(*repeat_dims)
+        if key == "pixel_values" and image_grid_thw is not None:
+            repeated[key] = _repeat_segmented_tensor(value, image_grid_thw, repeats) if repeats > 1 else value
+        elif key == "image_grid_thw" and image_grid_thw is not None:
+            repeated[key] = value.repeat_interleave(repeats, dim=0) if repeats > 1 else value
+        elif key == "pixel_values_videos" and video_grid_thw is not None:
+            repeated[key] = _repeat_segmented_tensor(value, video_grid_thw, repeats) if repeats > 1 else value
+        elif key == "video_grid_thw" and video_grid_thw is not None:
+            repeated[key] = value.repeat_interleave(repeats, dim=0) if repeats > 1 else value
+        elif value.shape[0] == prompt_batch:
+            repeated[key] = value.repeat_interleave(repeats, dim=0) if repeats > 1 else value
         else:
-            raise ValueError(f"Cannot repeat prompt input {key} with batch {value.shape[0]} to {repeats}")
+            raise ValueError(
+                f"Cannot repeat prompt input {key} with batch {value.shape[0]} "
+                f"when prompt batch is {prompt_batch} and repeats={repeats}"
+            )
     return repeated
 
 
@@ -286,8 +391,14 @@ def forward_answer_logits_batch(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if answer_ids.dim() == 1:
         answer_ids = answer_ids.unsqueeze(0)
-    batch_size = answer_ids.shape[0]
-    repeated_prompt_inputs = _repeat_prompt_inputs(prompt_inputs, batch_size)
+    prompt_batch = prompt_inputs["input_ids"].shape[0]
+    answer_batch = answer_ids.shape[0]
+    if answer_batch % prompt_batch != 0:
+        raise ValueError(
+            f"answer batch {answer_batch} is not divisible by prompt batch {prompt_batch}"
+        )
+    repeats = answer_batch // prompt_batch
+    repeated_prompt_inputs = _repeat_prompt_inputs(prompt_inputs, repeats)
     prompt_len = repeated_prompt_inputs["input_ids"].shape[1]
     prompt_attention = repeated_prompt_inputs.get("attention_mask")
     if prompt_attention is None:

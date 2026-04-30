@@ -40,6 +40,23 @@ from projects.pixvl_idea1.trainers.common import (
 )
 
 
+def build_privileged_rollout_prompt(sample: dict[str, object], best_text: str) -> str:
+    prompt_text = str(sample["prompt_text"])
+    if sample["task"] == "refseg":
+        return (
+            prompt_text
+            + "\n[Training-only privileged correct rollout]\n"
+            + best_text
+            + "\nUse the privileged correct rollout above as hidden guidance when evaluating candidate mask tokens."
+        )
+    return (
+        prompt_text
+        + "\n[Training-only privileged correct rollout]\n"
+        + clean_generated_text(best_text)
+        + "\nUse the privileged correct rollout above as hidden guidance when evaluating candidate description tokens."
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -219,16 +236,46 @@ def main() -> None:
                         rewards.append(reward)
                         fail_mask.append(1.0 if (effective_scale and fail) else 0.0)
 
+                    best_text = str(sample["answer_text"])
+
+                    teacher_mode = str((cfg.get("opd", {}) or {}).get("teacher_mode", "frozen_overlay"))
                     if cfg["loss"].get("lambda_opd", 0.0) > 0.0 and (
                         cfg.get("opd", {}).get("all_sample_distill", False) or any(value > 0.0 for value in fail_mask)
                     ):
-                        with torch.no_grad():
-                            teacher_logits_batch, _ = forward_answer_logits_batch(
-                                teacher_model,
-                                overlay_prompt_inputs,
-                                sample_ids_batch,
-                                pad_token_id,
+                        if teacher_mode == "self_privileged_rollout":
+                            teacher_image_key = str((cfg.get("opd", {}) or {}).get("teacher_image_key", "overlay_image"))
+                            teacher_prompt_text = (
+                                build_privileged_rollout_prompt(sample, best_text)
+                                if best_text is not None
+                                else sample["prompt_text"]
                             )
+                            teacher_overlay_prompt_inputs, _ = build_prompt_and_answer_ids(
+                                processor,
+                                sample[teacher_image_key],
+                                teacher_prompt_text,
+                                sample["answer_text"],
+                            )
+                            teacher_overlay_prompt_inputs = move_inputs_to_device(teacher_overlay_prompt_inputs, accelerator.device)
+                            teacher_self_model = accelerator.unwrap_model(model)
+                            model_was_training = teacher_self_model.training
+                            teacher_self_model.eval()
+                            with torch.no_grad():
+                                teacher_logits_batch, _ = forward_answer_logits_batch(
+                                    teacher_self_model,
+                                    teacher_overlay_prompt_inputs,
+                                    sample_ids_batch,
+                                    pad_token_id,
+                                )
+                            if model_was_training:
+                                teacher_self_model.train()
+                        else:
+                            with torch.no_grad():
+                                teacher_logits_batch, _ = forward_answer_logits_batch(
+                                    teacher_model,
+                                    overlay_prompt_inputs,
+                                    sample_ids_batch,
+                                    pad_token_id,
+                                )
                         teacher_weights = compute_teacher_confidence_weights_batch(teacher_logits_batch)
                         opd_values = compute_jsd_values(
                             student_logits_batch,
