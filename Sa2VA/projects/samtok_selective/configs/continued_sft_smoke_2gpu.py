@@ -1,0 +1,10 @@
+import os
+
+from projects.samtok_selective.config import build_config
+
+
+config = build_config(
+    smoke=True,
+    continue_from=os.environ.get("SAMTOK_STANDALONE_ADAPTER"),
+    stage="continued_sft_smoke_2gpu",
+)

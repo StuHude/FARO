@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import sys
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,11 +20,20 @@ from .schema import decode_rle_mask
 
 
 def _load_samtok_sam2_symbols():
-    sam2_path = Path("/mnt/pfs/xiaoyicheng/BRIDGE-OPD/Sa2VA/projects/samtok/models/sam2.py")
+    candidates = []
+    sa2va_root = os.environ.get("SAMTOK_SA2VA_ROOT", "")
+    if sa2va_root:
+        candidates.append(Path(sa2va_root) / "projects" / "samtok" / "models" / "sam2.py")
+    pixvl_root = os.environ.get("FARO_PROJECT_ROOT", os.environ.get("PIXVl_ROOT", ""))
+    if pixvl_root:
+        candidates.append(Path(pixvl_root) / "third_party" / "Sa2VA" / "projects" / "samtok" / "models" / "sam2.py")
+    candidates.append(Path("/mnt/pfs/xiaoyicheng/BRIDGE-OPD/Sa2VA/projects/samtok/models/sam2.py"))
+    sam2_path = next((path for path in candidates if path.is_file()), candidates[0])
     spec = importlib.util.spec_from_file_location("pixvl_samtok_sam2", sam2_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Failed to load SAMTok sam2 module from {sam2_path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module.SAM2Config, module.VQ_SAM2, module.VQ_SAM2Config
 

@@ -1,13 +1,31 @@
 from copy import deepcopy
+import os
 from pathlib import Path
 import runpy
 
 
-ROOT = Path("/mnt/pfs/xiaoyicheng")
-WORKSPACE = ROOT / "BRIDGE-OPD"
-SAMTOK_MODEL = ROOT / "models" / "Qwen3-VL-4B-SAMTok"
+ROOT = Path(os.environ.get("FARO_PROJECT_ROOT", "/mnt/pfs/xiaoyicheng"))
+WORKSPACE = Path(
+    os.environ.get("FARO_WORKSPACE_ROOT", str(ROOT / "BRIDGE-OPD"))
+)
+SAMTOK_MODEL = Path(
+    os.environ.get("FARO_SAMTOK_MODEL", str(ROOT / "models" / "Qwen3-VL-4B-SAMTok"))
+)
+if "samtok" not in str(SAMTOK_MODEL).lower():
+    raise ValueError(
+        "FARO_SAMTOK_MODEL must point to the original SAMTok checkpoint; "
+        "PixVL or other trained checkpoints are forbidden"
+    )
 
-base = runpy.run_path(WORKSPACE / "Sa2VA" / "projects" / "pixvl_idea1" / "configs" / "idea1_joint_sft.py")["config"]
+local_base_config = Path(__file__).resolve().parents[2] / "pixvl_idea1" / "configs" / "idea1_joint_sft.py"
+base_config = Path(
+    os.environ.get(
+        "FARO_BASE_CONFIG",
+        str(local_base_config if local_base_config.exists() else WORKSPACE / "Sa2VA" / "projects" / "pixvl_idea1" / "configs" / "idea1_joint_sft.py"),
+    )
+)
+
+base = runpy.run_path(base_config)["config"]
 config = deepcopy(base)
 
 config["stage"] = "idea3_mvp_base"
@@ -66,6 +84,14 @@ config["resume"] = {
 }
 config["checkpoint"]["save_every"] = 200
 config["routing"] = {
+    # Keep legacy source buckets by default.  ``predicted_only_evidence`` is an
+    # opt-in rollout-time adapter for ablations and deployment-like training.
+    "mode": "source_bucket",
+    "predicted_only_evidence": {
+        "temperature": 0.25,
+        "min_failure": 0.25,
+        "probe_index": 0,
+    },
     "max_confusers": 16,
     "failure_thresholds": {
         "semantic": 0.68,

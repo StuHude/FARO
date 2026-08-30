@@ -173,7 +173,35 @@ class UnifiedRegionDataset(Dataset):
                 self._debug(f"getitem start index={index} record={record['id']} task={record['task']} source={record['source']}")
                 image = Image.open(record["image_path"]).convert("RGB")
                 self._debug(f"getitem image_opened record={record['id']}")
-                mask = decode_rle_mask(record["mask"])
+                if record["task"] in {"existence", "direct_sft"}:
+                    prompt = record.get("query") or record.get("prompt") or "the described target"
+                    answer = record.get("answer") or record.get("caption") or "No target."
+                    task = record["task"]
+                    return {
+                        "id": record["id"], "task": task, "source": record.get("source", task),
+                        "route_bucket": task, "image_path": record["image_path"], "image": image,
+                        "overlay_image": image, "mask": None, "mask_binary": None,
+                        "query": prompt, "caption": answer, "split": record.get("split"), "gt_codes": [],
+                        "gt_mask_tokens": "", "aux_gt_codes": None, "aux_gt_mask_tokens": None,
+                        "prompt_text": (
+                            f"Does the image contain this target? {prompt}\nAnswer yes or no."
+                            if task == "existence" else str(prompt)
+                        ),
+                        "answer_text": answer, "meta": record.get("meta", {}),
+                    }
+                # Standard SAMTok RefCOCO exports contain the supervised mask
+                # token sequence but may not retain the original COCO RLE.
+                # Decode that label with the original SAMTok codec so ordinary
+                # on-policy RL can use the same geometry reward as RLE rows.
+                token_only = record.get("mask_tokens") or record.get("gt_mask_tokens")
+                no_target = bool((record.get("meta") or {}).get("no_target", False))
+                if token_only and not record.get("mask"):
+                    codes = self.codec.text_to_codes(str(token_only))
+                    mask = self.codec.decode_codes(image, codes)
+                    mask_obj = None
+                else:
+                    mask_obj = record["mask"]
+                    mask = decode_rle_mask(mask_obj)
                 overlay = build_overlay_image(
                     image=image,
                     mask=mask,
@@ -182,14 +210,19 @@ class UnifiedRegionDataset(Dataset):
                     boundary_color=self.overlay_cfg.get("boundary_color", [255, 64, 64]),
                 )
                 self._debug(f"getitem overlay_done record={record['id']}")
-                codes = self._ensure_codes(record, image)
-                mask_tokens = self.codec.codes_to_text(codes)
+                if no_target and record["task"] == "refseg":
+                    codes = []
+                elif token_only and not record.get("mask"):
+                    codes = self.codec.text_to_codes(str(token_only))
+                else:
+                    codes = self._ensure_codes(record, image)
+                mask_tokens = self.codec.codes_to_text(codes) if codes else ""
                 self._debug(f"getitem codes_ready record={record['id']}")
                 aux_codes = None
                 aux_mask_tokens = None
                 if record["task"] == "refseg":
                     prompt_text = self.prompt_templates["refseg"].format(query=record["query"])
-                    answer_text = mask_tokens
+                    answer_text = "No target." if no_target else mask_tokens
                 else:
                     aux_mask = (record.get("meta") or {}).get("aux_mask")
                     if aux_mask is not None:
@@ -214,13 +247,14 @@ class UnifiedRegionDataset(Dataset):
 
                 return {
                     "id": record["id"],
+                    "pair_id": record.get("pair_id", record["id"]),
                     "task": record["task"],
                     "source": record["source"],
                     "route_bucket": (record.get("meta") or {}).get("failure_route", "default"),
                     "image_path": record["image_path"],
                     "image": image,
                     "overlay_image": overlay,
-                    "mask": record["mask"],
+                    "mask": mask_obj if mask_obj is not None else {"format": "decoded_tokens", "size": [int(mask.shape[0]), int(mask.shape[1])]},
                     "mask_binary": mask,
                     "query": record.get("query"),
                     "caption": record.get("caption"),
@@ -252,7 +286,7 @@ class HomogeneousTaskBatchSampler(Sampler[list[int]]):
         self.task_to_indices: dict[str, list[int]] = {"refseg": [], "maskcap": []}
         self.grouped_indices: dict[tuple[str, str, str, int, int, int, int], list[int]] = {}
         for idx, record in enumerate(dataset.records):
-            self.task_to_indices[record["task"]].append(idx)
+            self.task_to_indices.setdefault(record["task"], []).append(idx)
             key = (
                 record["task"],
                 record["source"],
@@ -514,6 +548,52 @@ class HomogeneousTaskBatchSampler(Sampler[list[int]]):
             self.batch_offset = batch_idx + 1
             yield epoch_batches[batch_idx]
         self.next_epoch = epoch + 1
+        self.batch_offset = 0
+
+    def __len__(self) -> int:
+        return self.total_sampler_batches
+
+
+class FixedRecordOrderBatchSampler(Sampler[list[int]]):
+    """Yield schema records in order for exact-multiset curriculum controls."""
+
+    def __init__(self, dataset: UnifiedRegionDataset, batch_size: int) -> None:
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.num_replicas = max(int(os.environ.get("WORLD_SIZE", "1")), 1)
+        self.total_sampler_batches = (
+            len(dataset.records) // (self.batch_size * self.num_replicas)
+        ) * self.num_replicas
+        self.next_epoch = 0
+        self.batch_offset = 0
+
+    def set_start_step(self, step: int) -> None:
+        consumed = int(step) * self.num_replicas
+        if self.total_sampler_batches <= 0:
+            self.next_epoch = 0
+            self.batch_offset = 0
+            return
+        self.next_epoch = consumed // self.total_sampler_batches
+        self.batch_offset = consumed % self.total_sampler_batches
+
+    def state_dict(self) -> dict[str, int]:
+        return {
+            "next_epoch": self.next_epoch,
+            "batch_offset": self.batch_offset,
+            "num_replicas": self.num_replicas,
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        self.next_epoch = int(state.get("next_epoch", 0))
+        self.batch_offset = int(state.get("batch_offset", 0))
+
+    def __iter__(self):
+        start = self.batch_offset * self.batch_size
+        stop = self.total_sampler_batches * self.batch_size
+        for offset in range(start, stop, self.batch_size):
+            self.batch_offset = offset // self.batch_size + 1
+            yield list(range(offset, offset + self.batch_size))
+        self.next_epoch += 1
         self.batch_offset = 0
 
     def __len__(self) -> int:

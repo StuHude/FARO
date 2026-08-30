@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import os
 from collections import defaultdict
@@ -27,6 +28,7 @@ from projects.pixvl_idea1.trainers.common import (
     clean_generated_text,
     compute_answer_cross_entropy_per_sample,
     compute_answer_logprob_sums,
+    build_answer_token_scope,
     compute_jsd_values,
     compute_reference_kl_values,
     compute_teacher_confidence_weights_batch,
@@ -53,6 +55,40 @@ from projects.pixvl_idea3.routing import (
     compute_semantic_caption_reward,
     infer_atom_failure_route,
 )
+from projects.pixvl_idea3.failure_evidence import predicted_only_evidence_route, soft_local_scale
+from projects.pixvl_idea3.reward_ranking import RunningComponentRanker
+from projects.pixvl_idea3.selective_policy import (
+    anchor_relative_advantages,
+    project_conflicting_gradient,
+    selective_outcome_loss_scales,
+)
+from projects.pixvl_idea3.existence import predicts_target_exists
+from projects.pixvl_idea3.risk_constraints import outcome_constraint, update_dual
+
+
+def quality_gated_advantages(
+    rewards: list[float],
+    *,
+    threshold: float,
+    temperature: float = 0.05,
+) -> torch.Tensor:
+    """Use GRPO advantages only for rollouts above an absolute quality floor.
+
+    Relative ranking can reinforce a uniformly bad candidate group.  The gate
+    makes such groups contribute zero policy-gradient signal while retaining
+    the ordinary CE/KL preservation terms.  Above the floor, the smooth gate
+    preserves the within-group advantage ordering.
+    """
+    values = torch.tensor(rewards, dtype=torch.float32)
+    if values.numel() <= 1:
+        return torch.zeros_like(values)
+    centered = (values - values.mean()) / (values.std() + 1e-4)
+    scale = max(float(temperature), 1e-4)
+    gate = torch.sigmoid((values - float(threshold)) / scale)
+    # A hard floor avoids tiny updates from uniformly failed groups; the
+    # sigmoid remains useful for mixed groups near the acceptance boundary.
+    gate = gate * (values >= float(threshold)).to(values.dtype)
+    return centered * gate
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,6 +105,54 @@ def routing_payload_for_sample(cfg: dict[str, object], sample: dict[str, object]
     cached_payload = sample.get(runtime_key)
     if cached_mode == routing_mode and isinstance(cached_payload, dict):
         return cached_payload
+
+    if routing_mode in {"shared", "unified"}:
+        # Common task-matched objective: segmentation uses geometry reward and
+        # captioning uses semantic reward, without any per-sample router.
+        bucket = "geometry" if str(sample.get("task", "")) == "refseg" else "semantic"
+        payload = {
+            "failure_route": bucket,
+            "failure_route_reasons": ["shared_task_matched_objective"],
+            "route_weights": {name: 0.0 for name in ("semantic", "relation", "geometry")},
+            "shared_objective": True,
+        }
+        sample[runtime_mode_key] = routing_mode
+        sample[runtime_key] = payload
+        return payload
+
+    if routing_mode == "shuffled":
+        # Matched-compute negative control.  The assignment is deterministic
+        # per sample, independent of prompt, GT, source bucket, and rollout.
+        sample_id = str(sample.get("id", ""))
+        seed = int((cfg.get("seed", 0) if isinstance(cfg, dict) else 0))
+        digest = hashlib.sha256(f"{seed}:{sample_id}".encode("utf-8")).digest()
+        bucket = ("semantic", "relation", "geometry")[digest[0] % 3]
+        payload = {
+            "failure_route": bucket,
+            "failure_route_reasons": ["deterministic_shuffled_control"],
+            "route_weights": {
+                name: 1.0 if name == bucket else 0.0
+                for name in ("semantic", "relation", "geometry")
+            },
+            "shuffled": True,
+        }
+        sample[runtime_mode_key] = routing_mode
+        sample[runtime_key] = payload
+        return payload
+
+    if routing_mode in {"predicted_only_evidence", "predicted_evidence"}:
+        # A rollout has not been produced yet.  Keep the pre-rollout fallback
+        # neutral; update_rollout_predicted_route replaces it immediately after
+        # generation.  This preserves callers that inspect a sample early.
+        payload = {
+            "failure_route": "geometry",
+            "failure_route_reasons": ["awaiting_predicted_rollout"],
+            "route_weights": {name: 1.0 / 3.0 for name in ("semantic", "relation", "geometry")},
+            "predicted_only": True,
+        }
+        sample[runtime_mode_key] = routing_mode
+        sample[runtime_key] = payload
+        return payload
 
     if routing_mode == "atom_conditioned":
         payload = infer_atom_failure_route(sample, include_slice_tags=False)
@@ -90,6 +174,35 @@ def routing_payload_for_sample(cfg: dict[str, object], sample: dict[str, object]
 
     sample[runtime_mode_key] = routing_mode
     sample[runtime_key] = payload
+    return payload
+
+
+def update_rollout_predicted_route(
+    cfg: dict[str, object],
+    sample: dict[str, object],
+    predicted_text: str,
+    *,
+    answer_confidence: float | None = None,
+) -> dict[str, object]:
+    """Update a sample route from generated text, without target-derived data."""
+
+    routing = cfg.get("routing", {}) or {}
+    mode = str(routing.get("mode", "source_bucket")) if isinstance(routing, dict) else "source_bucket"
+    if mode not in {"predicted_only_evidence", "predicted_evidence"}:
+        return routing_payload_for_sample(cfg, sample)
+    fepo_cfg = routing.get("predicted_only_evidence", {}) if isinstance(routing, dict) else {}
+    if not isinstance(fepo_cfg, dict):
+        fepo_cfg = {}
+    payload = predicted_only_evidence_route(
+        prompt_text=str(sample.get("prompt_text", "")),
+        predicted_text=str(predicted_text),
+        task=str(sample.get("task", "")),
+        answer_confidence=answer_confidence,
+        temperature=float(fepo_cfg.get("temperature", 0.25)),
+        min_failure=float(fepo_cfg.get("min_failure", 0.25)),
+    )
+    sample["_runtime_routing_mode"] = mode
+    sample["_runtime_routing_payload"] = payload
     return payload
 
 
@@ -212,6 +325,19 @@ def compute_answer_entropy_scores(
     return entropy.sum(dim=-1) / lengths
 
 
+def rollout_answer_confidence(
+    answer_logits: torch.Tensor,
+    answer_attention: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Map predictive entropy to a bounded rollout-only confidence probe."""
+
+    entropy = compute_answer_entropy_scores(answer_logits, answer_attention)
+    max_entropy = torch.log(
+        torch.tensor(float(answer_logits.shape[-1]), device=answer_logits.device)
+    ).clamp_min(1e-6)
+    return (1.0 - entropy / max_entropy).clamp(0.0, 1.0)
+
+
 def minmax_normalize_tensor(values: torch.Tensor) -> torch.Tensor:
     if values.numel() <= 1:
         return torch.zeros_like(values)
@@ -265,6 +391,155 @@ def routed_reward(
     relation_confusers: dict[str, list[dict[str, object]]],
     similarity_scorer: SentenceSimilarityScorer,
 ) -> tuple[float, dict[str, float]]:
+    if sample.get("task") == "existence":
+        text = clean_generated_text(sample_text).lower()
+        target_exists = "no target" not in str(sample.get("answer_text", "")).lower()
+        predicted_exists = predicts_target_exists(text)
+        reward = 1.0 if predicted_exists == target_exists else 0.0
+        return reward, {"total": reward, "existence_total": reward}
+    if sample.get("task") == "refseg" and bool((sample.get("meta") or {}).get("no_target", False)):
+        explicit_null = not predicts_target_exists(clean_generated_text(sample_text))
+        negative_cfg = cfg.get("selective_negative_reward", {}) or {}
+        mode = str(negative_cfg.get("mode", "binary"))
+        if explicit_null:
+            reward = 1.0
+            predicted_area_ratio = 0.0
+        elif mode == "area_penalty":
+            parsed_codes = dataset.codec.text_to_codes(sample_text)
+            if len(parsed_codes) != dataset.codec.codebook_depth:
+                reward = -1.0
+                predicted_area_ratio = 1.0
+            else:
+                pred_mask = dataset.codec.decode_codes(sample["image"], parsed_codes)
+                if torch.is_tensor(pred_mask):
+                    predicted_area_ratio = float(pred_mask.float().mean().item())
+                else:
+                    predicted_area_ratio = float(pred_mask.mean())
+                predicted_area_ratio = max(0.0, min(1.0, predicted_area_ratio))
+                reward = -(predicted_area_ratio ** 0.5)
+        else:
+            reward = 0.0
+            predicted_area_ratio = 0.0
+        return reward, {
+            "total": reward,
+            "ciou": reward,
+            "boundary": reward,
+            "area": reward,
+            "exact": reward,
+            "selective_null": reward,
+            "predicted_area_ratio": predicted_area_ratio,
+        }
+    routing_mode = str((cfg.get("routing", {}) or {}).get("mode", "source_bucket"))
+    if routing_mode in {"predicted_only_evidence", "predicted_evidence"}:
+        # FEPO's defining contract: evaluate the same rollout with every
+        # task-valid verifier and blend their scores by predicted evidence.
+        # The route may still select a dominant local credit branch, but the
+        # reward itself is no longer a hard argmax over capabilities.
+        payload = routing_payload_for_sample(cfg, sample)
+        raw_weights = payload.get("route_weights", {})
+        weights = {
+            name: float(raw_weights.get(name, 0.0)) if isinstance(raw_weights, dict) else 0.0
+            for name in ("semantic", "relation", "geometry")
+        }
+        reward_cfg = (cfg.get("routing", {}) or {}).get("rewards", {})
+        text = clean_generated_text(sample_text)
+
+        if sample["task"] == "maskcap":
+            semantic_cfg = reward_cfg.get("semantic", {})
+            semantic_mode = str(semantic_cfg.get("mode", "base_keyword"))
+            if semantic_mode == "coverage_calibration":
+                semantic_details = compute_semantic_coverage_calibration_reward(
+                    text,
+                    sample["caption"],
+                    rec_weight=float(semantic_cfg.get("rec_weight", 0.2)),
+                    pos_weight=float(semantic_cfg.get("pos_weight", 0.45)),
+                    neg_weight=float(semantic_cfg.get("neg_weight", 0.35)),
+                )
+            else:
+                semantic_details = compute_semantic_caption_reward(
+                    text,
+                    sample["caption"],
+                    similarity_scorer=similarity_scorer,
+                    base_weight=float(semantic_cfg.get("base_weight", 0.75)),
+                    keyword_weight=float(semantic_cfg.get("keyword_weight", 0.25)),
+                )
+            relation_details = compute_relation_caption_reward(
+                text,
+                sample["caption"],
+                similarity_scorer=similarity_scorer,
+                base_weight=float(reward_cfg.get("relation_caption", {}).get("base_weight", 0.7)),
+                relation_weight=float(reward_cfg.get("relation_caption", {}).get("relation_weight", 0.3)),
+            )
+            active = {"semantic": weights["semantic"], "relation": weights["relation"]}
+            active_total = sum(active.values())
+            if active_total <= 1e-8:
+                active = {"semantic": 1.0, "relation": 0.0}
+                active_total = 1.0
+            total = (
+                active["semantic"] * float(semantic_details["total"])
+                + active["relation"] * float(relation_details["total"])
+            ) / active_total
+            return total, {
+                "total": total,
+                "semantic_total": float(semantic_details["total"]),
+                "relation_total": float(relation_details["total"]),
+                "route_semantic_weight": active["semantic"] / active_total,
+                "route_relation_weight": active["relation"] / active_total,
+            }
+
+        parsed_codes = dataset.codec.text_to_codes(sample_text)
+        pred_mask = dataset.codec.decode_codes(sample["image"], parsed_codes)
+        relation_details = compute_relation_reward(
+            pred_mask,
+            sample["mask_binary"],
+            confuser_masks=relation_confusers.get(sample["id"], []),
+            pred_codes=parsed_codes,
+            gt_codes=sample["gt_codes"],
+            target_weight=float(reward_cfg.get("relation", {}).get("target_weight", 0.7)),
+            margin_weight=float(reward_cfg.get("relation", {}).get("margin_weight", 0.2)),
+            exact_weight=float(reward_cfg.get("relation", {}).get("exact_weight", 0.1)),
+        )
+        geometry_details = compute_geometry_reward(
+            pred_mask,
+            sample["mask_binary"],
+            pred_codes=parsed_codes,
+            gt_codes=sample["gt_codes"],
+            ciou_weight=float(reward_cfg.get("geometry", {}).get("ciou_weight", 0.55)),
+            boundary_weight=float(reward_cfg.get("geometry", {}).get("boundary_weight", 0.25)),
+            area_weight=float(reward_cfg.get("geometry", {}).get("area_weight", 0.1)),
+            exact_weight=float(reward_cfg.get("geometry", {}).get("exact_weight", 0.1)),
+            boundary_width=int(reward_cfg.get("geometry", {}).get("boundary_width", 2)),
+        )
+        # Refseg has no independent semantic verifier; its semantic mass is
+        # conservatively folded into the geometry verifier rather than dropped.
+        active = {
+            "geometry": weights["geometry"] + weights["semantic"],
+            "relation": weights["relation"],
+        }
+        active_total = sum(active.values())
+        if active_total <= 1e-8:
+            active = {"geometry": 1.0, "relation": 0.0}
+            active_total = 1.0
+        total = (
+            active["geometry"] * float(geometry_details["total"])
+            + active["relation"] * float(relation_details["total"])
+        ) / active_total
+        fepo_cfg = (cfg.get("routing", {}) or {}).get("predicted_only_evidence", {})
+        anchor_weight = float(fepo_cfg.get("geometry_anchor", 0.0)) if isinstance(fepo_cfg, dict) else 0.0
+        anchor_weight = max(0.0, min(1.0, anchor_weight))
+        if anchor_weight > 0.0:
+            # Preserve a task-matched geometry floor while allowing evidence
+            # to redirect the remaining correction budget to relation credit.
+            total = anchor_weight * float(geometry_details["total"]) + (1.0 - anchor_weight) * total
+        return total, {
+            "total": total,
+            "geometry_total": float(geometry_details["total"]),
+            "relation_total": float(relation_details["total"]),
+            "geometry_anchor": anchor_weight,
+            "route_geometry_weight": active["geometry"] / active_total,
+            "route_relation_weight": active["relation"] / active_total,
+        }
+
     bucket = route_bucket_for_sample(cfg, sample)
     reward_cfg = (cfg.get("routing", {}) or {}).get("rewards", {})
     if sample["task"] == "maskcap":
@@ -432,6 +707,21 @@ def main() -> None:
     teacher_model.eval()
     reference_model.eval()
     similarity_scorer = SentenceSimilarityScorer()
+    rank_cfg = cfg.get("reward_ranking", {}) or {}
+    reward_rankers = {}
+    if bool(rank_cfg.get("enabled", False)):
+        capacity = int(rank_cfg.get("capacity", 16))
+        configured_components = rank_cfg.get("components", {}) or {}
+        reward_rankers = {
+            "refseg": RunningComponentRanker(
+                capacity,
+                tuple(configured_components.get("refseg", ("ciou", "boundary", "area", "exact"))),
+            ),
+            "maskcap": RunningComponentRanker(
+                capacity,
+                tuple(configured_components.get("maskcap", ("base", "relation"))),
+            ),
+        }
     pad_token_id = processor.tokenizer.pad_token_id
     if pad_token_id is None:
         pad_token_id = processor.tokenizer.eos_token_id
@@ -447,12 +737,23 @@ def main() -> None:
         "status": "running",
         "steps": [],
     }
+    risk_cfg = cfg.get("risk_constraint", {}) or {}
+    risk_enabled = bool(risk_cfg.get("enabled", False))
+    null_dual = float(risk_cfg.get("lambda_init", 0.0))
+    null_budget = float(risk_cfg.get("budget", 0.0))
+    null_epsilon = float(risk_cfg.get("epsilon", 0.0))
+    null_dual_lr = float(risk_cfg.get("dual_lr", 0.0))
+    null_dual_max = float(risk_cfg.get("lambda_max", 10.0))
     log_every = int(cfg.get("logging", {}).get("log_every", 1))
     snapshot_every = int(cfg.get("logging", {}).get("snapshot_every", 10))
     save_every = int(cfg["checkpoint"].get("save_every", 0))
     reserve_buffers: list[torch.Tensor] = []
     reserve_target_gb = float(cfg.get("memory_optim", {}).get("gpu_reserve_target_gb", 0.0))
     reserve_headroom_gb = float(cfg.get("memory_optim", {}).get("gpu_reserve_headroom_gb", 8.0))
+    projection_cfg = cfg.get("selective_gradient_projection", {}) or {}
+    projection_enabled = bool(projection_cfg.get("enabled", False))
+    if projection_enabled and int(cfg["optimizer"]["grad_accum_steps"]) != 1:
+        raise ValueError("selective gradient projection requires grad_accum_steps=1")
 
     model.train()
     step = resume_steps
@@ -463,10 +764,28 @@ def main() -> None:
             step_bucket_rewards: dict[str, list[float]] = defaultdict(list)
             step_bucket_failures: dict[str, int] = defaultdict(int)
             step_bucket_counts: dict[str, int] = defaultdict(int)
+            step_quality_gate_active = 0
+            step_quality_gate_total = 0
+            step_anchor_improved = 0
+            step_anchor_total = 0
+            step_selective_positive_groups = 0
+            step_selective_positive_active_groups = 0
+            step_selective_negative_groups = 0
+            step_selective_negative_active_groups = 0
             step_triage_counts: dict[str, int] = defaultdict(int)
             step_triage_q_values: list[float] = []
+            projection_stats: dict[str, float | bool] = {
+                "active": False,
+                "dot": 0.0,
+                "cosine": 0.0,
+                "coefficient": 0.0,
+            }
             with accelerator.accumulate(model):
                 total_loss = torch.zeros((), device=accelerator.device)
+                objective_loss = torch.zeros((), device=accelerator.device)
+                constraint_loss = torch.zeros((), device=accelerator.device)
+                objective_count = 0
+                constraint_count = 0
                 batch_inputs, answer_mask = build_supervised_batch_inputs(processor, batch)
                 batch_inputs = move_inputs_to_device(batch_inputs, accelerator.device)
                 answer_mask = answer_mask.to(accelerator.device)
@@ -475,6 +794,12 @@ def main() -> None:
                 labels = batch_inputs["input_ids"][:, 1:]
                 token_mask = answer_mask[:, 1:] & batch_inputs["attention_mask"][:, 1:].bool()
                 ce_losses = compute_answer_cross_entropy_per_sample(logits, labels, token_mask)
+                null_violation, null_loss_value, null_mask = outcome_constraint(
+                    ce_losses,
+                    batch,
+                    budget=null_budget,
+                    epsilon=null_epsilon,
+                )
                 task_to_indices: dict[str, list[int]] = defaultdict(list)
                 for sample_idx_in_batch, sample in enumerate(batch):
                     task_to_indices[str(sample["task"])].append(sample_idx_in_batch)
@@ -483,6 +808,7 @@ def main() -> None:
                     [
                         len(task_to_indices.get("refseg", [])),
                         len(task_to_indices.get("maskcap", [])),
+                        len(task_to_indices.get("existence", [])),
                     ],
                     dtype=torch.int64,
                     device=accelerator.device,
@@ -494,7 +820,7 @@ def main() -> None:
                             f"Per-rank task counts diverged: {gathered_task_counts.detach().cpu().tolist()}"
                         )
 
-                for task in ("refseg", "maskcap"):
+                for task in ("refseg", "maskcap", "existence"):
                     batch_indices = task_to_indices.get(task, [])
                     if not batch_indices:
                         continue
@@ -522,20 +848,41 @@ def main() -> None:
                         student_logits_batch,
                         sample_ids_batch,
                         answer_attention,
+                        token_scope=build_answer_token_scope(sample_ids_batch, processor, task),
                     )
 
                     per_sample_rewards: list[list[float]] = []
+                    per_sample_anchor_rewards: list[float] = []
                     per_sample_fail_masks: list[list[float]] = []
                     per_sample_privileged_texts: list[str | None] = []
                     for local_idx, global_idx in enumerate(batch_indices):
                         sample = batch[global_idx]
+                        routing_mode = str((cfg.get("routing", {}) or {}).get("mode", "source_bucket"))
                         bucket = route_bucket_for_sample(cfg, sample)
                         start = local_idx * group_size
                         end = start + group_size
+                        if routing_mode in {"predicted_only_evidence", "predicted_evidence"}:
+                            fepo_cfg = (cfg.get("routing", {}) or {}).get("predicted_only_evidence", {})
+                            if not isinstance(fepo_cfg, dict):
+                                fepo_cfg = {}
+                            probe_index = int(fepo_cfg.get("probe_index", 0))
+                            probe_index = max(0, min(probe_index, max(group_size - 1, 0)))
+                            update_rollout_predicted_route(
+                                cfg,
+                                sample,
+                                sample_texts[start + probe_index],
+                                answer_confidence=float(
+                                    rollout_answer_confidence(
+                                        student_logits_batch[start + probe_index : start + probe_index + 1],
+                                        answer_attention[start + probe_index : start + probe_index + 1],
+                                    )[0].item()
+                                ),
+                            )
+                            bucket = route_bucket_for_sample(cfg, sample)
                         rewards: list[float] = []
                         fail_mask: list[float] = []
                         for sample_offset, sample_text in enumerate(sample_texts[start:end]):
-                            reward_value, _ = routed_reward(
+                            reward_value, reward_details = routed_reward(
                                 cfg,
                                 sample,
                                 sample_text,
@@ -543,6 +890,13 @@ def main() -> None:
                                 relation_confusers,
                                 similarity_scorer,
                             )
+                            if reward_rankers:
+                                task_name = str(sample["task"])
+                                component_values = {
+                                    name: float(reward_details.get(name, reward_details.get(f"{name}_total", reward_details.get("total", reward_value))))
+                                    for name in reward_rankers[task_name].components
+                                }
+                                reward_value = reward_rankers[task_name].score(component_values)
                             rewards.append(float(reward_value))
                             step_bucket_rewards[bucket].append(float(reward_value))
                             threshold = failure_threshold(cfg, bucket, sample["task"])
@@ -552,8 +906,46 @@ def main() -> None:
                             step_bucket_counts[bucket] += 1
                             fail_mask.append(1.0 if fail else 0.0)
                         per_sample_rewards.append(rewards)
+                        per_sample_anchor_rewards.append(float("nan"))
+                        if sample.get("task") == "refseg" and bool(
+                            (sample.get("meta") or {}).get("no_target", False)
+                        ):
+                            step_selective_negative_groups += 1
+                            if rewards and max(rewards) - min(rewards) > 1e-8:
+                                step_selective_negative_active_groups += 1
+                        elif sample.get("task") == "refseg":
+                            step_selective_positive_groups += 1
+                            if rewards and max(rewards) - min(rewards) > 1e-8:
+                                step_selective_positive_active_groups += 1
                         per_sample_fail_masks.append(fail_mask)
                         per_sample_privileged_texts.append(str(sample["answer_text"]))
+
+                    anchor_relative_enabled = (
+                        str(cfg.get("rl", {}).get("advantage_mode", "group_normalized"))
+                        == "anchor_relative"
+                    )
+                    if anchor_relative_enabled:
+                        anchor_generation_cfg = dict(cfg["generation"][task])
+                        anchor_generation_cfg["do_sample"] = False
+                        with torch.no_grad():
+                            _, anchor_texts = generate_answers(
+                                accelerator.unwrap_model(reference_model),
+                                processor,
+                                prompt_inputs,
+                                anchor_generation_cfg,
+                                num_return_sequences=1,
+                            )
+                        for local_idx, global_idx in enumerate(batch_indices):
+                            sample = batch[global_idx]
+                            anchor_reward, _ = routed_reward(
+                                cfg,
+                                sample,
+                                anchor_texts[local_idx],
+                                dataloader.dataset,
+                                relation_confusers,
+                                similarity_scorer,
+                            )
+                            per_sample_anchor_rewards[local_idx] = float(anchor_reward)
 
                     triage_enabled = bool((cfg.get("triage", {}) or {}).get("enabled", False))
                     teacher_mode = str((cfg.get("opd", {}) or {}).get("teacher_mode", "frozen_overlay"))
@@ -634,16 +1026,6 @@ def main() -> None:
                     else:
                         opd_values_all = torch.zeros(sample_ids_batch.shape[0], dtype=torch.float32, device=accelerator.device)
 
-                    overlay_prompt_inputs = build_prompt_batch_inputs(processor, task_samples, image_key="overlay_image")
-                    overlay_prompt_inputs = move_inputs_to_device(overlay_prompt_inputs, accelerator.device)
-                    with torch.no_grad():
-                        teacher_logits_batch, _ = forward_answer_logits_batch(
-                            teacher_model,
-                            overlay_prompt_inputs,
-                            sample_ids_batch,
-                            pad_token_id,
-                        )
-
                     with torch.no_grad():
                         ref_logits_batch, _ = forward_answer_logits_batch(
                             reference_model,
@@ -661,15 +1043,67 @@ def main() -> None:
                         sample = batch[global_idx]
                         bucket = route_bucket_for_sample(cfg, sample)
                         route_weights = route_weights_for_sample(cfg, sample)
-                        bucket_cfg = cfg.get("routing", {}).get("buckets", {}).get(bucket, {})
+                        routing_cfg = cfg.get("routing", {})
+                        bucket_cfg = routing_cfg.get("buckets", {}).get(bucket, {})
+                        use_soft_local = (
+                            isinstance(routing_cfg, dict)
+                            and routing_cfg.get("credit_assignment") == "soft_local"
+                            and str(routing_cfg.get("mode", ""))
+                            in {"predicted_only_evidence", "predicted_evidence"}
+                        )
                         ce_loss = ce_losses[global_idx]
-                        ce_scale = bucket_scale_with_route_weight(bucket_cfg, route_weights, bucket, "ce_scale")
+                        if use_soft_local:
+                            ce_scale = soft_local_scale(
+                                routing_cfg,
+                                route_weights,
+                                "ce_scale",
+                                fallback_bucket=bucket,
+                            )
+                        else:
+                            ce_scale = bucket_scale_with_route_weight(bucket_cfg, route_weights, bucket, "ce_scale")
                         if sample["task"] == "maskcap":
                             ce_loss = ce_loss * float(cfg["loss"].get("lambda_cap_ce", 1.0))
 
                         start = local_idx * group_size
                         end = start + group_size
-                        advantages = normalize_rewards(per_sample_rewards[local_idx]).to(accelerator.device)
+                        advantage_mode = str(cfg.get("rl", {}).get("advantage_mode", "group_normalized"))
+                        if advantage_mode == "quality_gated":
+                            threshold_cfg = cfg.get("rl", {}).get("quality_threshold", {})
+                            if isinstance(threshold_cfg, dict):
+                                quality_threshold = float(threshold_cfg.get(str(sample["task"]), 0.5))
+                            else:
+                                quality_threshold = float(threshold_cfg)
+                            advantages = quality_gated_advantages(
+                                per_sample_rewards[local_idx],
+                                threshold=quality_threshold,
+                                temperature=float(cfg.get("rl", {}).get("gate_temperature", 0.05)),
+                            ).to(accelerator.device)
+                            step_quality_gate_total += len(per_sample_rewards[local_idx])
+                            step_quality_gate_active += sum(
+                                float(value) >= quality_threshold
+                                for value in per_sample_rewards[local_idx]
+                            )
+                        elif advantage_mode == "group_normalized":
+                            advantages = normalize_rewards(per_sample_rewards[local_idx]).to(accelerator.device)
+                        elif advantage_mode == "anchor_relative":
+                            no_target = sample.get("task") == "refseg" and bool(
+                                (sample.get("meta") or {}).get("no_target", False)
+                            )
+                            if no_target:
+                                advantages = torch.zeros(
+                                    group_size,
+                                    dtype=torch.float32,
+                                    device=accelerator.device,
+                                )
+                            else:
+                                advantages = anchor_relative_advantages(
+                                    per_sample_rewards[local_idx],
+                                    per_sample_anchor_rewards[local_idx],
+                                ).to(accelerator.device)
+                            step_anchor_improved += int((advantages > 0).sum().item())
+                            step_anchor_total += int(advantages.numel())
+                        else:
+                            raise ValueError(f"unknown rl.advantage_mode: {advantage_mode}")
                         logprob_slice = logprob_sums[start:end]
                         opd_values = opd_values_all[start:end]
                         kl_values = kl_values_all[start:end]
@@ -682,22 +1116,143 @@ def main() -> None:
                         opd_loss = (opd_values * opd_mask).sum() / opd_mask.sum().clamp_min(1.0)
                         kl_loss = kl_values.mean()
 
-                        rl_scale = bucket_scale_with_route_weight(bucket_cfg, route_weights, bucket, "rl_scale")
-                        opd_scale = bucket_scale_with_route_weight(bucket_cfg, route_weights, bucket, "opd_scale")
+                        if use_soft_local:
+                            rl_scale = soft_local_scale(
+                                routing_cfg,
+                                route_weights,
+                                "rl_scale",
+                                fallback_bucket=bucket,
+                            )
+                            opd_scale = soft_local_scale(
+                                routing_cfg,
+                                route_weights,
+                                "opd_scale",
+                                fallback_bucket=bucket,
+                            )
+                        else:
+                            rl_scale = bucket_scale_with_route_weight(bucket_cfg, route_weights, bucket, "rl_scale")
+                            opd_scale = bucket_scale_with_route_weight(bucket_cfg, route_weights, bucket, "opd_scale")
                         if sample["task"] == "refseg":
                             base_rl_lambda = float(cfg["loss"]["lambda_rl_seg"])
                         else:
                             base_rl_lambda = float(cfg["loss"]["lambda_rl_cap"])
+                        outcome_scales = selective_outcome_loss_scales(cfg, sample)
                         loss = (
-                            float(cfg["loss"]["lambda_ce"]) * ce_scale * ce_loss
-                            + base_rl_lambda * rl_scale * rl_loss
-                            + float(cfg["loss"].get("lambda_opd", 0.0)) * opd_scale * opd_loss
-                            + float(cfg["loss"]["beta_kl"]) * kl_loss
+                            float(cfg["loss"]["lambda_ce"])
+                            * outcome_scales["ce"]
+                            * ce_scale
+                            * ce_loss
+                            + base_rl_lambda
+                            * outcome_scales["rl"]
+                            * rl_scale
+                            * rl_loss
+                            + float(cfg["loss"].get("lambda_opd", 0.0))
+                            * outcome_scales["opd"]
+                            * opd_scale
+                            * opd_loss
+                            + float(cfg["loss"]["beta_kl"])
+                            * outcome_scales["kl"]
+                            * kl_loss
                         )
                         total_loss = total_loss + loss
+                        # V7 keeps the positive policy objective separate from
+                        # explicit no-target supervision.  This lets us
+                        # project only the geometry/policy update when it
+                        # would increase the negative-outcome loss.
+                        if (
+                            projection_enabled
+                            and sample["task"] == "refseg"
+                            and bool((sample.get("meta") or {}).get("no_target", False))
+                        ):
+                            constraint_loss = constraint_loss + loss
+                            constraint_count += 1
+                        else:
+                            objective_loss = objective_loss + loss
+                            objective_count += 1
 
-                total_loss = total_loss / max(len(batch), 1)
-                accelerator.backward(total_loss)
+                if risk_enabled and bool(null_mask.any()):
+                    # Add one outcome-specific constraint per optimizer batch.
+                    total_loss = total_loss + null_dual * null_violation
+                    violation_value = float(null_violation.detach().cpu())
+                    null_dual = update_dual(
+                        null_dual,
+                        violation_value,
+                        learning_rate=null_dual_lr,
+                        maximum=null_dual_max,
+                    )
+
+                if projection_enabled:
+                    # Projection is intentionally restricted to one optimizer
+                    # step per batch (validated above).  Each branch captures
+                    # local gradients without DDP synchronization, then uses
+                    # explicit reductions before projection.
+                    outcome_counts = torch.tensor(
+                        [objective_count, constraint_count],
+                        dtype=torch.float32,
+                        device=accelerator.device,
+                    )
+                    outcome_counts = accelerator.reduce(outcome_counts, reduction="sum")
+                    global_objective_count = int(outcome_counts[0].item())
+                    global_constraint_count = int(outcome_counts[1].item())
+                    # Every rank must participate in both DDP backward passes.
+                    # A rank without one outcome contributes a differentiable
+                    # zero; the all-reduce then yields each global gradient.
+                    if objective_count == 0:
+                        objective_loss = total_loss * 0.0
+                    if constraint_count == 0:
+                        constraint_loss = total_loss * 0.0
+                    objective_loss = objective_loss / max(global_objective_count, 1)
+                    constraint_loss = constraint_loss / max(global_constraint_count, 1)
+                    total_loss = objective_loss + constraint_loss
+                    params = [p for p in model.parameters() if p.requires_grad]
+
+                    # Always take both no-sync backward passes, including when
+                    # one outcome is absent globally.  Falling back to ordinary
+                    # DDP backward in that case averages an already globally
+                    # normalized local loss and shrinks it by world size.
+                    optimizer.zero_grad(set_to_none=True)
+                    with accelerator.no_sync(model):
+                        accelerator.backward(objective_loss, retain_graph=True)
+                    objective_grads = [
+                        p.grad.detach().clone() if p.grad is not None else torch.zeros_like(p)
+                        for p in params
+                    ]
+                    optimizer.zero_grad(set_to_none=True)
+                    with accelerator.no_sync(model):
+                        accelerator.backward(constraint_loss)
+                    constraint_grads = [
+                        p.grad.detach().clone() if p.grad is not None else torch.zeros_like(p)
+                        for p in params
+                    ]
+                    if accelerator.num_processes > 1:
+                        objective_grads = [
+                            accelerator.reduce(grad, reduction="sum") for grad in objective_grads
+                        ]
+                        constraint_grads = [
+                            accelerator.reduce(grad, reduction="sum") for grad in constraint_grads
+                        ]
+                    if global_objective_count and global_constraint_count:
+                        projected_grads, projection_stats = project_conflicting_gradient(
+                            objective_grads,
+                            constraint_grads,
+                            epsilon=float(projection_cfg.get("epsilon", 1e-12)),
+                        )
+                        optimizer.zero_grad(set_to_none=True)
+                        for parameter, projected, constraint in zip(
+                            params, projected_grads, constraint_grads
+                        ):
+                            parameter.grad = projected + constraint
+                    else:
+                        # With only one global outcome, there is nothing to
+                        # project; retain the explicitly reduced available
+                        # gradient and keep the absent side at zero.
+                        for parameter, objective, constraint in zip(
+                            params, objective_grads, constraint_grads
+                        ):
+                            parameter.grad = objective + constraint
+                else:
+                    total_loss = total_loss / max(len(batch), 1)
+                    accelerator.backward(total_loss)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -714,8 +1269,43 @@ def main() -> None:
                         device=accelerator.device,
                     )
 
+            if str(cfg.get("rl", {}).get("advantage_mode", "group_normalized")) == "anchor_relative":
+                anchor_counts = accelerator.reduce(
+                    torch.tensor(
+                        [step_anchor_improved, step_anchor_total],
+                        dtype=torch.float32,
+                        device=accelerator.device,
+                    ),
+                    reduction="sum",
+                )
+                step_anchor_improved = int(anchor_counts[0].item())
+                step_anchor_total = int(anchor_counts[1].item())
+
             if accelerator.is_main_process:
                 step_metrics = {"step": step, "loss": step_loss_value}
+                if risk_enabled:
+                    negative_kl = kl_values_all[null_mask.to(kl_values_all.device)]
+                    step_metrics.update(
+                        {
+                            "null_loss": float(null_loss_value.cpu()),
+                            "null_budget": null_budget + null_epsilon,
+                            "null_violation": float(null_violation.detach().cpu()),
+                            "null_lambda": null_dual,
+                            "null_constraint_active": int(bool(null_mask.any())),
+                            "null_kl_mean": float(negative_kl.mean().detach().cpu()),
+                        }
+                    )
+                if projection_enabled:
+                    step_metrics.update(
+                        {
+                            "projection_active": int(bool(projection_stats["active"])),
+                            "projection_dot": float(projection_stats["dot"]),
+                            "projection_cosine": float(projection_stats["cosine"]),
+                            "projection_coefficient": float(projection_stats["coefficient"]),
+                            "projection_objective_groups": int(global_objective_count),
+                            "projection_constraint_groups": int(global_constraint_count),
+                        }
+                    )
                 for bucket in sorted(step_bucket_counts):
                     count = max(step_bucket_counts[bucket], 1)
                     step_metrics[f"{bucket}_mean_reward"] = sum(step_bucket_rewards[bucket]) / max(
@@ -727,6 +1317,16 @@ def main() -> None:
                         step_metrics[f"triage_{triage_label}_count"] = step_triage_counts[triage_label]
                 if step_triage_q_values:
                     step_metrics["triage_mean_q"] = sum(step_triage_q_values) / len(step_triage_q_values)
+                if str(cfg.get("rl", {}).get("advantage_mode", "group_normalized")) == "quality_gated":
+                    step_metrics["quality_gate_active_rate"] = step_quality_gate_active / max(step_quality_gate_total, 1)
+                if str(cfg.get("rl", {}).get("advantage_mode", "group_normalized")) == "anchor_relative":
+                    step_metrics["anchor_improved_rollout_rate"] = (
+                        step_anchor_improved / max(step_anchor_total, 1)
+                    )
+                if step_selective_negative_groups:
+                    step_metrics["selective_negative_active_group_rate"] = (
+                        step_selective_negative_active_groups / step_selective_negative_groups
+                    )
                 metrics["steps"].append(step_metrics)
                 if step % log_every == 0:
                     print(json.dumps(step_metrics, ensure_ascii=False), flush=True)

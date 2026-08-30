@@ -41,6 +41,18 @@ official_eval/
 *.sqlite3
 *.db
 
+# Research runtime artifacts and external dependency checkouts
+evals/
+logs/
+vendor/
+third_party/
+codex_resume/*.log
+codex_resume/*.json
+codex_resume/*.pid
+codex_resume/*.resume
+codex_resume/*.eval_submitted
+codex_resume/*.eval_retry_after
+
 # Keep project code, but ignore local model and dataset drops if they appear inside repo
 **/mask_tokenizer_256x2.pth
 **/sam2.1_hiera_large.pt

@@ -15,6 +15,7 @@ import uuid
 import hydra
 
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+from peft import PeftModel
 
 
 from qwen_vl_utils import process_vision_info
@@ -146,6 +147,10 @@ def parse_args():
         '--dataset',
         default='./data/PaDT-MLLM/RefCOCO/grefcoco_val.json',
         help='Specify a ref dataset')
+    parser.add_argument(
+        '--adapter_path', '--adapter-path',
+        default='',
+        help='Optional PEFT adapter applied to the original SAMTok base model.')
     parser.add_argument('--task_id', '--task-id', type=int, default=0)
     args = parser.parse_args()
     return args
@@ -302,7 +307,13 @@ def main():
 
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         args.model_path, torch_dtype="auto"
-    ).cuda().eval()
+    )
+    # The shard wrapper predates adapter support and supplies a SimpleNamespace;
+    # keep it compatible while allowing an explicit environment override.
+    adapter_path = getattr(args, "adapter_path", "") or os.environ.get("FARO_PEFT_ADAPTER", "")
+    if adapter_path:
+        model = PeftModel.from_pretrained(model, adapter_path, is_trainable=False)
+    model = model.cuda().eval()
 
     processor = AutoProcessor.from_pretrained(args.model_path)
 

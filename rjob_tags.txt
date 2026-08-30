@@ -1,0 +1,10 @@
+# Positive tags for dnacoding FARO jobs. Keep this list synchronized with the
+# cluster nodes approved for the ailab-dnacoding namespace.
+node/gpu-lg-cmc-h-h200-0258.host.h.pjlab.org.cn
+node/gpu-lg-cmc-h-h200-0262.host.h.pjlab.org.cn
+node/gpu-lg-cmc-h-h200-0881.host.h.pjlab.org.cn
+node/gpu-lg-cmc-h-h200-0883.host.h.pjlab.org.cn
+node/gpu-lg-cmc-h-h200-0885.host.h.pjlab.org.cn
+node/gpu-lg-cmc-h-h200-0995.host.h.pjlab.org.cn
+node/gpu-lg-cmc-h-h200-1011.host.h.pjlab.org.cn
+node/gpu-lg-cmc-h-h200-3135.host.h.pjlab.org.cn

@@ -1,0 +1,3 @@
+# Positive tags for dnacoding jobs requesting fewer than eight GPUs.
+node/gpu-lg-cmc-h-h200-0511.host.h.pjlab.org.cn
+node/gpu-lg-cmc-h-h200-0263.host.h.pjlab.org.cn

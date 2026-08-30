@@ -485,6 +485,13 @@ def build_relation_confuser_map(records: list[dict[str, Any]], max_confusers: in
 
     confuser_map: dict[str, list[dict[str, Any]]] = {}
     for group in image_to_records.values():
+        # Token-only RefCOCO rows are decoded lazily by UnifiedRegionDataset;
+        # they have no RLE object to use as a confuser mask.  Keep the map
+        # empty for such rows rather than rejecting an otherwise valid label.
+        if any(not isinstance(record.get("mask"), dict) for record in group):
+            for record in group:
+                confuser_map[record["id"]] = []
+            continue
         signatures = {
             record["id"]: f'{record["mask"].get("size")}::{record["mask"].get("counts")}'
             for record in group

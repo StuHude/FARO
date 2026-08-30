@@ -5,6 +5,7 @@ import importlib.metadata
 import math
 import os
 import random
+import re
 import runpy
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration, get_cosine_schedule_with_warmup
 
 from projects.pixvl_idea1.datasets import (
+    FixedRecordOrderBatchSampler,
     HomogeneousTaskBatchSampler,
     UnifiedRegionDataset,
     identity_collate,
@@ -151,11 +153,17 @@ def build_dataloader(
         visual_token_filter=cfg["data"].get("visual_token_filter"),
         codec_device=codec_device,
     )
-    batch_sampler = HomogeneousTaskBatchSampler(
-        dataset,
-        cfg["data"]["batch_size"],
-        seed=int(cfg.get("seed", 0)),
-    )
+    if bool(cfg["data"].get("fixed_record_order", False)):
+        batch_sampler = FixedRecordOrderBatchSampler(
+            dataset,
+            cfg["data"]["batch_size"],
+        )
+    else:
+        batch_sampler = HomogeneousTaskBatchSampler(
+            dataset,
+            cfg["data"]["batch_size"],
+            seed=int(cfg.get("seed", 0)),
+        )
     if sampler_state is not None:
         batch_sampler.load_state_dict(sampler_state)
     elif resume_steps > 0:
@@ -339,6 +347,18 @@ def forward_answer_logits(
         "input_ids": input_ids,
         "attention_mask": attention_mask,
     }
+    if "mm_token_type_ids" in prompt_inputs:
+        prompt_mm_types = prompt_inputs["mm_token_type_ids"]
+        answer_mm_types = torch.zeros(
+            (answer_ids.shape[0], answer_ids.shape[1]),
+            dtype=prompt_mm_types.dtype,
+            device=prompt_mm_types.device,
+        )
+        model_inputs["mm_token_type_ids"] = torch.cat(
+            [prompt_mm_types, answer_mm_types], dim=1
+        )
+    # Qwen3-VL requires mm_token_type_ids whenever image_grid_thw is present
+    # so multimodal RoPE can be recomputed for prompt+answer scoring.
     for key in ("pixel_values", "image_grid_thw"):
         if key in prompt_inputs:
             model_inputs[key] = prompt_inputs[key]
@@ -413,6 +433,16 @@ def forward_answer_logits_batch(
     for key in ("pixel_values", "image_grid_thw"):
         if key in repeated_prompt_inputs:
             model_inputs[key] = repeated_prompt_inputs[key]
+    if "mm_token_type_ids" in repeated_prompt_inputs:
+        prompt_mm_types = repeated_prompt_inputs["mm_token_type_ids"]
+        answer_mm_types = torch.zeros(
+            (answer_ids.shape[0], answer_ids.shape[1]),
+            dtype=prompt_mm_types.dtype,
+            device=prompt_mm_types.device,
+        )
+        model_inputs["mm_token_type_ids"] = torch.cat(
+            [prompt_mm_types, answer_mm_types], dim=1
+        )
     outputs = model(**model_inputs, use_cache=False)
     logits = outputs.logits[:, :-1]
     answer_logits = logits[:, prompt_len - 1 : prompt_len - 1 + answer_ids.shape[1], :]
@@ -435,6 +465,7 @@ def compute_answer_logprob_sums(
     answer_logits: torch.Tensor,
     answer_ids: torch.Tensor,
     answer_attention: torch.Tensor | None = None,
+    token_scope: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if answer_ids.dim() == 1:
         answer_ids = answer_ids.unsqueeze(0)
@@ -442,7 +473,39 @@ def compute_answer_logprob_sums(
     token_log_probs = log_probs.gather(-1, answer_ids.unsqueeze(-1)).squeeze(-1)
     if answer_attention is not None:
         token_log_probs = token_log_probs * answer_attention.to(token_log_probs.dtype)
+    if token_scope is not None:
+        token_log_probs = token_log_probs * token_scope.to(token_log_probs.dtype)
     return token_log_probs.sum(dim=-1)
+
+
+def build_answer_token_scope(
+    answer_ids: torch.Tensor,
+    processor: Any,
+    task: str,
+) -> torch.Tensor:
+    """Return local policy-credit scope (mask code tokens for refseg)."""
+
+    if task != "refseg":
+        return torch.ones_like(answer_ids, dtype=torch.long)
+    tokenizer = getattr(processor, "tokenizer", None)
+    vocab = tokenizer.get_vocab() if tokenizer is not None and hasattr(tokenizer, "get_vocab") else {}
+    mask_ids = {
+        int(token_id)
+        for token, token_id in vocab.items()
+        if re.fullmatch(r"<\|mt_\d{4}\|>", str(token))
+    }
+    if not mask_ids:
+        # Preserve a usable objective for non-SAMTok tokenizers.
+        return torch.ones_like(answer_ids, dtype=torch.long)
+    scope = torch.zeros_like(answer_ids, dtype=torch.long)
+    for token_id in mask_ids:
+        scope = torch.maximum(scope, (answer_ids == token_id).long())
+    # A selective refseg rollout may explicitly abstain instead of emitting a
+    # mask. Give such sequences full token credit; padding is removed by the
+    # answer-attention mask at the caller.
+    has_mask_token = scope.bool().any(dim=-1, keepdim=True)
+    scope = torch.where(has_mask_token, scope, torch.ones_like(scope))
+    return scope
 
 
 def generate_answer(

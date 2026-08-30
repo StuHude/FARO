@@ -6,6 +6,20 @@ The core question of this project is:
 
 > Can we improve pixel-level grounding by routing different failure types to different reward decompositions, correction strengths, and post-training stages?
 
+The current implementation audit shows that the legacy route is scalar reward/
+loss reweighting, not three independent correction experts. The proposed
+unified follow-up is **FEPO (Failure-Evidence-Conditioned Pixel Policy
+Optimization)**: a rollout-time, predicted-only evidence vector drives a soft
+mixture of task-matched local credit. The promoted `soft_local` mode blends
+all capability scales; dominant-bucket scaling remains an ablation. See
+`FEPO_PROPOSAL.md` and `FEPO_EXPERIMENT_MATRIX.md` before starting a scale run.
+
+All new cluster submissions must use dnacoding, a `dna-` name, and one job
+requesting 8--24 GPUs. The aggregate live budget is at most 24 GPUs and
+workspace storage is capped at 700G. `scripts/submit_fepo_softcredit_8gpu.sh`
+is the prepared matched-run entry point; it must only be launched after a
+live-job and storage check.
+
 This repository only stores:
 - code
 - configs
