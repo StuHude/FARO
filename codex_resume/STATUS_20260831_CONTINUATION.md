@@ -70,3 +70,18 @@ runner and submit the registered 2-GPU job with all positive tags from
 -> 1`, waiting five minutes at each non-terminal level.  Only a valid
 5,120-row/10-step/K=4 worker artifact can unlock the fixed 512-row,
 20,000-bootstrap normal-vs-anchor evaluation and then its shuffled control.
+
+## Continuation check (2026-08-31 22:20 HKT)
+
+- Rechecked the repository after the documentation refresh; `main` is clean
+  and contains the new `118a876` README commit in addition to the 13 pending
+  commits relative to `origin/main`.
+- Re-ran the worker-like static suite: `120 passed`.  The candidate contract
+  probe reported 17 registered contracts and 13 finite credit variants; the
+  A-PES probe reported the fixed 5,120-row/10-step/K=4 contract and seed 1907.
+  These remain offline implementation checks only.
+- The latest `rjob list --namespace=ailab-dnacoding` retry still fails before
+  API access with `ProxyError`/unresolved
+  `httpproxy-headless.kubebrain.svc.pjlab.local`; `logs/pes_submit/submitted`
+  is absent.  No PES job, checkpoint, holdout, or bootstrap artifact is
+  inferred from this failure.
