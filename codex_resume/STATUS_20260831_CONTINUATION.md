@@ -35,6 +35,10 @@ No files were written under `PixVL_ailab`.
   `PYTHONPATH`.  With the explicitly approved SAMTok checkpoint it reports
   `actual_rows=5120 configured_rows=5120 configured_steps=10`; it still fails
   closed when no checkpoint environment is supplied.
+- The complete `tests/test_*static.py` suite was rerun in the worker-like
+  `sa2va` environment with the pinned transformer source: `120 passed`.  This
+  covers all registered candidate contracts, SAMTok-only/path guards, positive
+  tags, training budgets, adaptive GPU fallback, and PES transition gates.
 - A consistency audit found the standalone A-PES probe had reversed the
   registered gap direction.  `tools/apes_probe.py` and its synthetic tests now
   use the same larger-gap-is-confident (`>=`) semantics as the trainer; the
