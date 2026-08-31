@@ -21,6 +21,7 @@ submitted only after the normal worker passes every validity gate.
 The authoritative experiment decisions are recorded in:
 
 - `RESULTS_LEDGER_20260828.md`
+- `FINAL_RESULTS_TABLE_20260831.md`
 - `FEPO_CONTINUATION_DECISION_TABLE_20260828.md`
 - `LITERATURE_CLAIM_AUDIT_20260829.md`
 - `PES_FEPO_PREREG_20260829.md`
