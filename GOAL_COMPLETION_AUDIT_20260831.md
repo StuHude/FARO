@@ -65,7 +65,8 @@ defensible method claim and the overall goal remains active.
 ## Current recheck (2026-08-31 22:24 HKT)
 
 The local repository is clean and now includes the corrected SAMTok-only
-README; the latest local commit is `0168469`.  The PES training manifest still
+README; the latest local commit is `bb81bc4` (the README itself was recorded
+in `118a876`).  The PES training manifest still
 has exactly 5,120 rows, and the standalone budget validator reports 10
 configured optimizer steps.  With the approved read-only SAMTok anchor, the
 manifest guard and tail-GPPO contract both return `status: ok`.
