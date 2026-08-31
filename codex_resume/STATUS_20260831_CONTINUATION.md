@@ -156,3 +156,19 @@ promotion remain pending until the dnacoding control plane is reachable.
   endpoint both remain unreachable due to DNS/proxy resolution. Consequently
   no PES job, checkpoint, worker metric, holdout, shuffled control, or final
   promotion is inferred.
+
+## Current recheck (2026-08-31 23:40 HKT)
+
+- The complete registered static contract selection was rerun after the
+  retryer change: `131 passed in 9.07s`.
+- The single PES retryer continues to hold `logs/pes_submit/.lock` and emitted
+  `2026-08-31T23:39:17+08:00 control_plane_unavailable status=1`. No second
+  runner was started and `submitted` remains absent.
+- `submit_pes_after_ab_rejection.sh` now best-effort sources the requested
+  internal proxy setup script after a failed control-plane query. A failed
+  refresh is non-fatal and the original 300-second retry/backoff and all
+  submission gates remain unchanged. This code applies on the next retryer
+  restart; the currently locked process was not interrupted.
+- The latest local commits are `9b73b46` (proxy refresh) and `3456aa8`
+  (budget-audit documentation). These are local evidence only until GitHub
+  connectivity is restored.
