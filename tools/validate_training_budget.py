@@ -5,7 +5,15 @@ from __future__ import annotations
 
 import argparse
 import runpy
+import sys
 from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SA2VA_ROOT = ROOT / "Sa2VA"
+for path in (SA2VA_ROOT, ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 
 def _nonempty_rows(path: Path) -> int:

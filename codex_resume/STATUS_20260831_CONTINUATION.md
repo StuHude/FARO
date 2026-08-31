@@ -30,6 +30,11 @@ No files were written under `PixVL_ailab`.
   candidate index rather than the global vocabulary token id.  The regression
   covers effective-support sampling and action-term rescoring with offset
   code vocabularies; the focused PES suite passes `6 passed` after the fix.
+- The standalone budget validator now inserts the repository's `Sa2VA` path
+  itself, so direct root-level audits no longer depend on an inherited worker
+  `PYTHONPATH`.  With the explicitly approved SAMTok checkpoint it reports
+  `actual_rows=5120 configured_rows=5120 configured_steps=10`; it still fails
+  closed when no checkpoint environment is supplied.
 - A consistency audit found the standalone A-PES probe had reversed the
   registered gap direction.  `tools/apes_probe.py` and its synthetic tests now
   use the same larger-gap-is-confident (`>=`) semantics as the trainer; the
