@@ -80,3 +80,17 @@ its own process namespace.  The namespace-local PID cannot be checked with
 `kill -0` from this shell; do not launch a second copy.  No PES rjob,
 checkpoint, holdout, bootstrap artifact, or final-paper promotion is inferred
 from the preflight checks.
+
+## Current recheck (2026-08-31 22:58 HKT)
+
+The repository remains clean after commit `9b1521a`, which enforces the
+complete registered `rjob_tags.txt` allowlist for the adaptive action-margin
+diagnostic at every GPU level and removes the obsolete alternate tag file.
+The worker-like registered static suite passes `120 tests`; focused PES/A-PES
+and submission/monitor checks pass `49 tests`. The PES budget validator and
+both SAMTok launch preflight checks remain successful.
+
+The normal PES retry has no submission marker. The latest control-plane
+recheck still fails before API access because the configured proxy hostname
+cannot be resolved. Therefore there is still no PES checkpoint, worker
+metrics, 512-row holdout, shuffled control, or final promotion result.

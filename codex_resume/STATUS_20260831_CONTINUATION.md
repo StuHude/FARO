@@ -106,3 +106,25 @@ runner and submit the registered 2-GPU job with all positive tags from
   not create an rjob or imply a checkpoint/quality result.
 - The repository-local `outputs` and `logs` files occupy approximately 33.68
   GiB, so the 700G storage ceiling is not currently the limiting condition.
+
+## Continuation check (2026-08-31 22:58 HKT)
+
+- The full registered static suite was rerun in the worker-like conda
+  environment with the pinned transformer source: `120 passed`.
+- Focused PES/A-PES, submission, monitor, and action-margin contract tests
+  passed `49 passed`; the candidate probe remains finite for all registered
+  variants.
+- The normal PES retry still has no `submitted` marker. A fresh
+  `rjob list --namespace=ailab-dnacoding` attempt fails before API access with
+  an unresolved configured proxy host, so no PES worker or holdout result is
+  inferred.
+- `submit_action_margin_diag.sh` now always reads the complete registered
+  `rjob_tags.txt` allowlist, including GPU levels below eight; the obsolete
+  alternate tag file was removed.
+- The normal PES budget validator reports `actual_rows=5120`,
+  `configured_rows=5120`, and `configured_steps=10`. SAMTok manifest and
+  tail-GPPO preflight both return `status: ok` with the approved anchor.
+
+These are implementation and launch-preflight checks only. The required
+normal PES training, shuffled control, 512-row evaluations, and final
+promotion remain pending until the dnacoding control plane is reachable.
