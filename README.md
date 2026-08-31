@@ -70,7 +70,7 @@ waiting 300 seconds before each downgrade; the one-GPU job is left queued.
 Run from the repository root with the project environment active:
 
 ```bash
-PYTHONPATH=third_party/transformers:Sa2VA:. pytest -q tests/test_*static.py
+PYTHONPATH=third_party/transformers/src:Sa2VA:. pytest -q tests/test_*static.py
 python tools/run_fepo_candidate_probe.py
 python tools/run_apes_contract_probe.py
 ```
@@ -80,7 +80,9 @@ approved SAMTok base checkpoint:
 
 ```bash
 SAMTOK_BASE_CHECKPOINT=/path/to/samtok/checkpoint \
-  python tools/validate_training_budget.py
+  python tools/validate_training_budget.py \
+  --config Sa2VA/projects/samtok_selective/configs/fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_10step_2gpu.py \
+  --data data/fepo_existence/egfepo_train_5120.jsonl
 ```
 
 ## Training and evaluation entry points
