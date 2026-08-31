@@ -220,10 +220,11 @@ boundary-hard/thin boundary-IoU slices cross the registered `-0.01`
 non-inferiority limit, so this is a supervised compute control with a
 geometry-tail trade-off, not an RL replacement.
 
-The complete-result table and claim boundary are maintained in
-`RESULTS_LEDGER_20260828.md`. It records only 512-row, 20,000-bootstrap
-comparisons and explicitly separates promoted evidence from closed negative
-controls.
+The complete-result ledger is maintained in `RESULTS_LEDGER_20260828.md`,
+with the compact artifact-backed table in
+`FINAL_RESULTS_TABLE_20260831.md`. Both record only 512-row,
+20,000-bootstrap comparisons and explicitly separate promoted evidence from
+closed negative controls.
 
 ## 9. Final Claim Boundary and Pending Controls (2026-08-29)
 
