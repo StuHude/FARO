@@ -61,3 +61,17 @@ image-disjoint holdout and 20,000 paired bootstrap, submit the shuffled
 negative control only after normal PES passes, and select a final survivor
 before official transfer.  Until these artifacts exist, R18 remains the only
 defensible method claim and the overall goal remains active.
+
+## Current recheck (2026-08-31 22:24 HKT)
+
+The local repository is clean and now includes the corrected SAMTok-only
+README; the latest local commit is `0168469`.  The PES training manifest still
+has exactly 5,120 rows, and the standalone budget validator reports 10
+configured optimizer steps.  With the approved read-only SAMTok anchor, the
+manifest guard and tail-GPPO contract both return `status: ok`.
+
+The dnacoding proxy and cluster DNS remain unresolved.  The stale retry PID is
+not a live process in this isolated workspace, so the lock-protected retry
+script is ready but must be relaunched in a persistent user session once the
+control plane is reachable.  No PES rjob, checkpoint, holdout, bootstrap
+artifact, or final-paper promotion is inferred from the preflight checks.
