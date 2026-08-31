@@ -202,6 +202,17 @@ promotion remain pending until the dnacoding control plane is reachable.
 - FARO storage is approximately `39G` total (`outputs` 34G, `evals` 4.4G,
   `logs` 43M), well below the 700G ceiling. No cleanup is required for the
   current experiment queue and no data was written under `PixVL_ailab`.
-- The repository remains clean at 39 local commits ahead of `origin/main`.
+- The repository remains clean at 40 local commits ahead of `origin/main`.
 - `rjob list --namespace=ailab-dnacoding` still fails before API access with
   the unresolved configured proxy; the PES retryer has no submission marker.
+
+## Launch preflight recheck (2026-08-31 23:56 HKT)
+
+- Using the exact approved read-only SAMTok anchor and PES manifest, the
+  budget validator returned `training_budget_ok actual_rows=5120
+  configured_rows=5120 configured_steps=10`.
+- `projects.samtok_selective.manifests guard` returned `status: ok`, and
+  `tail_gppo_contract --adapter .../continued_sft_to500/adapter
+  --skip-model-hash` returned `status: ok` with the registered 500-step anchor.
+- These launch checks are local and do not create an rjob. The control-plane
+  retry remains unsubmitted; no worker or quality result is inferred.
