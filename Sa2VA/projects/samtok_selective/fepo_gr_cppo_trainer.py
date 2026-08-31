@@ -1749,7 +1749,12 @@ def sample_effective_support_grammar_rollouts(
                 # rollout. The tensor is detached with the surrounding
                 # no-grad rollout and is used only for PES scope selection.
                 native_logit = candidate_logits.max(dim=-1).values
-                sampled_logit = candidate_logits.gather(1, selected[:, None]).squeeze(1)
+                # ``selected`` contains a vocabulary token id, while
+                # ``candidate_logits`` is indexed by the depth-local code
+                # position.  Use the local index to avoid out-of-range
+                # gathers whenever the code vocabulary is offset or the
+                # calibrated support is smaller than the full vocabulary.
+                sampled_logit = candidate_logits.gather(1, selected_local[:, None]).squeeze(1)
                 native_margins.append(native_logit - sampled_logit)
                 action_temperatures.append(temperatures)
                 action_supports.append(support_ids)

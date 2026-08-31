@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import runpy
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
 from projects.samtok_selective.fepo_gr_cppo_trainer import (
     clipped_scope_policy_loss,
     predicted_evidence_scope_masks,
+    sample_effective_support_grammar_rollouts,
+    score_sampled_sequences,
 )
 from projects.samtok_selective.tail_gppo_contract import (
     UNIFIED_PREDICTED_EVIDENCE_SCOPE_SHUFFLED_STAGE,
@@ -124,6 +127,55 @@ def test_pes_shuffle_changes_only_state_assignment():
     assert torch.equal(shuffled_states, expected_states)
     assert shuffled_scope.shape == normal_scope.shape
     assert shuffled_scope.requires_grad is False
+
+
+def test_pes_sampler_handles_depth_local_indices():
+    class DummyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.bias = torch.nn.Parameter(torch.linspace(0.1, 1.0, 32))
+
+        def forward(self, input_ids, attention_mask, **kwargs):
+            batch, length = input_ids.shape
+            logits = self.bias[None, None, :].expand(batch, length, -1)
+            return SimpleNamespace(logits=logits)
+
+    model = DummyModel()
+    grammar = (1, [[2, 3, 4, 5], [10, 11, 12, 13], [18, 19, 20, 21]], 22)
+    prompt = {
+        "input_ids": torch.tensor([[25, 26], [25, 26]], dtype=torch.long),
+        "attention_mask": torch.ones((2, 2), dtype=torch.long),
+    }
+    torch.manual_seed(1907)
+    sampled = sample_effective_support_grammar_rollouts(
+        model,
+        prompt,
+        grammar,
+        support_size=4,
+        target_effective_support=3.0,
+        temperature_min=1.0,
+        temperature_max=8.0,
+        calibration_iterations=3,
+    )
+    sequence_ids, sampled_codes, behavior_log_probs = sampled[:3]
+    temperatures, support_ids = sampled[3:5]
+    assert sequence_ids.shape == (2, 5)
+    assert all(len(codes) == 3 for codes in sampled_codes)
+    assert behavior_log_probs.shape == (2,)
+    assert temperatures.shape == (2, 3)
+    assert support_ids.shape == (2, 3, 4)
+    assert torch.isfinite(behavior_log_probs).all()
+    action_terms = score_sampled_sequences(
+        model,
+        prompt,
+        sequence_ids,
+        grammar,
+        temperatures,
+        support_ids,
+        return_action_terms=True,
+    )
+    assert action_terms.shape == (2, 3)
+    assert torch.isfinite(action_terms).all()
 
 
 def test_pes_rollout_margin_is_sampled_action_aware():

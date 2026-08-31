@@ -25,6 +25,11 @@ No files were written under `PixVL_ailab`.
   advantages remain detached, and seed-1907 shuffling changes only evidence
   state assignment.  These are local objective-contract checks, not model
   quality evidence.
+- A CPU dummy-model rollout exposed and fixed a sampler indexing defect: the
+  native-vs-sampled margin now gathers the sampled logit with its depth-local
+  candidate index rather than the global vocabulary token id.  The regression
+  covers effective-support sampling and action-term rescoring with offset
+  code vocabularies; the focused PES suite passes `6 passed` after the fix.
 - A consistency audit found the standalone A-PES probe had reversed the
   registered gap direction.  `tools/apes_probe.py` and its synthetic tests now
   use the same larger-gap-is-confident (`>=`) semantics as the trainer; the
