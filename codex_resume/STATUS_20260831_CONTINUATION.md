@@ -184,3 +184,15 @@ promotion remain pending until the dnacoding control plane is reachable.
 - The latest normal retry heartbeat remains
   `2026-08-31T23:39:17+08:00 control_plane_unavailable status=1`; DNS/API
   recovery has not occurred, so no training or evaluation artifact is claimed.
+
+## Current recheck (2026-08-31 23:50 HKT)
+
+- `tools/run_fepo_candidate_probe.py` completed successfully: all 17 registered
+  candidate contracts report 5,120 rows, 10 optimizer steps, K=4, and finite
+  local credit probes. `tools/run_apes_contract_probe.py` also passed with
+  detached states `[0, 1, 2, 1]` and fixed shuffle seed `1907`.
+- These probes are implementation-contract evidence only. They do not imply a
+  model-quality result or unlock the shuffled branch.
+- The normal retryer remains single-instance with its lock held. Its latest
+  heartbeat is `2026-08-31T23:44:18+08:00 control_plane_unavailable status=1`,
+  and no `submitted` marker exists; control-plane DNS remains unavailable.
