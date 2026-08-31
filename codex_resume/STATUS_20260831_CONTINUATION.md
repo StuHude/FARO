@@ -136,3 +136,23 @@ promotion remain pending until the dnacoding control plane is reachable.
   rows and 20,000 repetitions; no non-official artifact violated this format.
 - The working tree is clean. The PES retry remains single-instance and has no
   `submitted` marker; the control-plane DNS failure is unchanged.
+
+## Current recheck (2026-08-31 23:30 HKT)
+
+- The worker-like FARO contract subset was rerun with the `sa2va` environment:
+  `130 passed in 9.46s`. This includes PES/A-PES scope, positive-tag,
+  adaptive evaluation, training-budget, storage, and submitter guards.
+- A full `pytest tests` collection in that environment remains unavailable
+  because its installed `huggingface-hub==1.21.0` violates the pinned
+  Transformers requirement `huggingface-hub>=0.34.0,<1.0` while importing two
+  legacy PixVL tests. No dependency was installed or written into the
+  repository; this is recorded as an environment gap rather than a FARO test
+  pass or failure.
+- `logs/pes_submit/.lock` is still held by the single retry process (its PID is
+  outside this shell's PID namespace), and no second runner was started. The
+  latest log heartbeat is `2026-08-31T23:24:13+08:00` with
+  `control_plane_unavailable status=1`; `submitted` is absent.
+- A direct `rjob list --namespace=ailab-dnacoding` and the requested proxy setup
+  endpoint both remain unreachable due to DNS/proxy resolution. Consequently
+  no PES job, checkpoint, worker metric, holdout, shuffled control, or final
+  promotion is inferred.
