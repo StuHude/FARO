@@ -19,6 +19,12 @@ No files were written under `PixVL_ailab`.
   registered candidate contracts satisfy the minimum row/step/K checks, and
   all 13 available credit variants produced finite probe values.  This is
   implementation evidence only; it is not a training or quality result.
+- The SAMTok worker environment reran the focused PES/A-PES and submission
+  contract tests with `27 passed`.  The added PES regression checks verify
+  that non-selected code depths receive exactly zero policy gradient,
+  advantages remain detached, and seed-1907 shuffling changes only evidence
+  state assignment.  These are local objective-contract checks, not model
+  quality evidence.
 - A consistency audit found the standalone A-PES probe had reversed the
   registered gap direction.  `tools/apes_probe.py` and its synthetic tests now
   use the same larger-gap-is-confident (`>=`) semantics as the trainer; the

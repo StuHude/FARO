@@ -73,6 +73,59 @@ def test_pes_scope_and_loss_are_detached_and_finite():
     assert torch.isfinite(ratio).all()
 
 
+def test_pes_scope_loss_is_token_local_and_advantage_detached():
+    current = torch.tensor(
+        [[0.20, -0.10, 0.30], [0.05, 0.40, -0.20]],
+        requires_grad=True,
+    )
+    behavior = (current.detach() - 0.05)
+    advantages = torch.tensor([2.0, -1.0], requires_grad=True)
+    action_mask = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 1.0]])
+
+    loss, ratio, clip_fraction = clipped_scope_policy_loss(
+        current,
+        behavior,
+        advantages,
+        action_mask,
+        0.2,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(ratio).all()
+    assert torch.isfinite(clip_fraction)
+    assert advantages.grad is None
+    assert current.grad is not None
+    assert current.grad[0, 1:].abs().sum() == 0
+    assert current.grad[1, 0].abs() == 0
+    assert current.grad[0, 0].abs() > 0
+    assert current.grad[1, 1:].abs().sum() > 0
+
+
+def test_pes_shuffle_changes_only_state_assignment():
+    entropy = torch.full((4, 3), 0.1)
+    mass = torch.full_like(entropy, 0.5)
+    margin = torch.full_like(entropy, 1.2)
+    sampled = [[0, 1, 9], [8, 1, 2], [0, 7, 2], [0, 1, 2]]
+    kwargs = dict(
+        controlled_entropies=entropy,
+        top_support_masses=mass,
+        sampled_codes=sampled,
+        native_codes=[0, 1, 2],
+        native_margins=margin,
+    )
+    normal_scope, normal_states = predicted_evidence_scope_masks(**kwargs)
+    shuffled_scope, shuffled_states = predicted_evidence_scope_masks(
+        **kwargs, shuffle_seed=1907
+    )
+    generator = torch.Generator()
+    generator.manual_seed(1907)
+    expected_states = normal_states[torch.randperm(4, generator=generator)]
+    assert torch.equal(shuffled_states, expected_states)
+    assert shuffled_scope.shape == normal_scope.shape
+    assert shuffled_scope.requires_grad is False
+
+
 def test_pes_rollout_margin_is_sampled_action_aware():
     source = TRAINER_SOURCE.read_text(encoding="utf-8")
     # Guard the registered evidence semantics against a regression to the
