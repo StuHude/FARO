@@ -55,7 +55,7 @@ def main() -> None:
         requires_grad=True,
     )
     p_sampled = torch.tensor(
-        [[0.75, 0.75, 0.75], [0.50, 0.50, 0.50], [0.00, 0.00, 0.00], [0.70, 0.70, 0.70]],
+        [[0.40, 0.40, 0.40], [0.65, 0.65, 0.65], [0.60, 0.60, 0.60], [0.70, 0.70, 0.70]],
         dtype=torch.float32,
         requires_grad=True,
     )
@@ -67,8 +67,8 @@ def main() -> None:
         p_sampled,
         sampled_codes,
         native_codes,
-        confident_gap=0.10,
-        ambiguous_gap=0.40,
+        confident_gap=0.30,
+        ambiguous_gap=0.10,
     )
     # The fourth row is ambiguous by gap but has no code change, so its scope
     # remains empty despite state 1.
@@ -83,8 +83,8 @@ def main() -> None:
         p_sampled,
         sampled_codes,
         native_codes,
-        confident_gap=0.10,
-        ambiguous_gap=0.40,
+        confident_gap=0.30,
+        ambiguous_gap=0.10,
         shuffle_seed=1907,
     )
     generator = torch.Generator()

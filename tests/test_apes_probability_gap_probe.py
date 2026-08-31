@@ -17,13 +17,14 @@ probability_gap_scope_masks = MODULE.probability_gap_scope_masks
 def test_probability_gap_scope_contract_and_detach():
     entropy = torch.tensor([[0.1, 0.2], [0.6, 0.7], [2.0, 2.0]])
     native = torch.tensor([[0.8, 0.8], [0.7, 0.7], [0.6, 0.6]], requires_grad=True)
-    sampled = torch.tensor([[0.75, 0.75], [0.50, 0.50], [0.0, 0.0]], requires_grad=True)
+    sampled = torch.tensor([[0.4, 0.4], [0.65, 0.65], [0.6, 0.6]], requires_grad=True)
     scope, states, gap = probability_gap_scope_masks(
-        entropy, native, sampled, [[0, 4], [4, 5], [0, 1]], [0, 1]
+        entropy, native, sampled, [[0, 4], [4, 5], [0, 1]], [0, 1],
+        confident_gap=0.3, ambiguous_gap=0.1
     )
     assert states.tolist() == [0, 1, 2]
     assert scope.tolist() == [[0.0, 1.0], [1.0, 1.0], [0.0, 0.0]]
-    assert torch.allclose(gap, native.detach() - sampled.detach())
+    assert torch.allclose(gap, (native.detach() - sampled.detach()).clamp_min(0.0))
     assert not scope.requires_grad and not states.requires_grad and not gap.requires_grad
 
 

@@ -23,17 +23,19 @@ def probability_gap_scope_masks(
     support_size: int = 8,
     confident_entropy: float = 0.35,
     ambiguous_entropy: float = 0.70,
-    confident_gap: float = 0.10,
-    ambiguous_gap: float = 0.40,
+    confident_gap: float = 0.40,
+    ambiguous_gap: float = 0.10,
     shuffle_seed: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return detached A-PES scope, state, and probability-gap tensors.
 
-    ``g = p_native - p_sampled`` is computed at each mask-code depth.  State
-    0 (confident) scopes the first changed depth, state 1 (ambiguous) scopes
-    the first two changed depths, and state 2 (unsupported) has an empty
-    scope.  ``shuffle_seed`` permutes only the evidence states, preserving the
-    same rows, code changes, and probability gaps for the negative control.
+    ``g = p_native - p_sampled`` is computed at each mask-code depth.  As in
+    the registered trainer, a larger native-vs-sampled gap is stronger
+    evidence: state 0 (confident) scopes the first changed depth, state 1
+    (ambiguous) scopes the first two changed depths, and state 2 (unsupported)
+    has an empty scope.  ``shuffle_seed`` permutes only the evidence states,
+    preserving the same rows, code changes, and probability gaps for the
+    negative control.
     """
     tensors = (entropies, native_probabilities, sampled_probabilities)
     if any(t.ndim != 2 for t in tensors):
@@ -59,7 +61,7 @@ def probability_gap_scope_masks(
         raise ValueError("A-PES thresholds must be finite")
     if not (0.0 < confident_entropy < ambiguous_entropy <= 1.0):
         raise ValueError("A-PES entropy thresholds must be ordered in (0, 1]")
-    if confident_gap > ambiguous_gap:
+    if confident_gap < ambiguous_gap:
         raise ValueError("A-PES gap thresholds must be ordered")
     for name, values in (
         ("entropy", entropies),
@@ -76,13 +78,13 @@ def probability_gap_scope_masks(
     # Detach before any state or scope decision: evidence is a rollout
     # diagnostic and must never carry a policy gradient.
     entropy = entropies.detach().float().clamp_min(0.0)
-    gap = (native_probabilities.detach().float() - sampled_probabilities.detach().float())
+    gap = (native_probabilities.detach().float() - sampled_probabilities.detach().float()).clamp_min(0.0)
     normalized_entropy = entropy / math.log(float(support_size))
     mean_entropy = normalized_entropy.mean(dim=1)
     mean_gap = gap.mean(dim=1)
-    confident = (mean_entropy < confident_entropy) & (mean_gap <= confident_gap)
+    confident = (mean_entropy < confident_entropy) & (mean_gap >= confident_gap)
     ambiguous = (~confident) & (
-        (mean_entropy < ambiguous_entropy) | (mean_gap <= ambiguous_gap)
+        (mean_entropy < ambiguous_entropy) | (mean_gap >= ambiguous_gap)
     )
     states = torch.full(
         (len(sampled_codes),), 2, dtype=torch.long, device=entropies.device
