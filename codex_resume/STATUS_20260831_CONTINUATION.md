@@ -196,3 +196,12 @@ promotion remain pending until the dnacoding control plane is reachable.
 - The normal retryer remains single-instance with its lock held. Its latest
   heartbeat is `2026-08-31T23:44:18+08:00 control_plane_unavailable status=1`,
   and no `submitted` marker exists; control-plane DNS remains unavailable.
+
+## Resource recheck (2026-08-31 23:48 HKT)
+
+- FARO storage is approximately `39G` total (`outputs` 34G, `evals` 4.4G,
+  `logs` 43M), well below the 700G ceiling. No cleanup is required for the
+  current experiment queue and no data was written under `PixVL_ailab`.
+- The repository remains clean at 39 local commits ahead of `origin/main`.
+- `rjob list --namespace=ailab-dnacoding` still fails before API access with
+  the unresolved configured proxy; the PES retryer has no submission marker.
