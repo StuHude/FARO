@@ -81,6 +81,14 @@ its own process namespace.  The namespace-local PID cannot be checked with
 checkpoint, holdout, bootstrap artifact, or final-paper promotion is inferred
 from the preflight checks.
 
+## Evidence recheck (2026-08-31 23:20 HKT)
+
+The registered static suite passes `121 tests`, and a machine scan confirms
+64 FARO bootstrap artifacts with exactly 512 paired rows and 20,000
+repetitions; no unexpected non-official artifact violates the format. The
+working tree is clean. PES remains unsubmitted because the control-plane DNS
+failure persists, so the final method and transfer claims remain open.
+
 ## Current recheck (2026-08-31 22:58 HKT)
 
 The repository remains clean after commit `9b1521a`, which enforces the

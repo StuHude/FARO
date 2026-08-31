@@ -128,3 +128,11 @@ runner and submit the registered 2-GPU job with all positive tags from
 These are implementation and launch-preflight checks only. The required
 normal PES training, shuffled control, 512-row evaluations, and final
 promotion remain pending until the dnacoding control plane is reachable.
+
+## Evidence recheck (2026-08-31 23:20 HKT)
+
+- The registered static suite passes `121 tests` after the submitter guards.
+- A machine scan found 64 FARO bootstrap artifacts with exactly 512 paired
+  rows and 20,000 repetitions; no non-official artifact violated this format.
+- The working tree is clean. The PES retry remains single-instance and has no
+  `submitted` marker; the control-plane DNS failure is unchanged.
