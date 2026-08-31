@@ -19,6 +19,10 @@ No files were written under `PixVL_ailab`.
   registered candidate contracts satisfy the minimum row/step/K checks, and
   all 13 available credit variants produced finite probe values.  This is
   implementation evidence only; it is not a training or quality result.
+- A consistency audit found the standalone A-PES probe had reversed the
+  registered gap direction.  `tools/apes_probe.py` and its synthetic tests now
+  use the same larger-gap-is-confident (`>=`) semantics as the trainer; the
+  corrected probe still returns states `[0, 1, 2, 1]`.
 
 ## Control-plane recheck
 
