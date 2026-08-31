@@ -13,6 +13,7 @@ queue snapshot in `GOAL_COMPLETION_AUDIT_20260830.md` where timestamps differ.
 | Evaluation fallback | Adaptive evaluators pin `8 -> 6 -> 4 -> 2 -> 1` and 300-second waits; terminal 1-GPU stage is left queued | verified statically |
 | A-PES implementation probe | `run_apes_contract_probe.py` passed with detached state/scope and seed `1907` | verified as offline contract only |
 | Candidate implementation probe | `run_fepo_candidate_probe.py` exited `0`; 17 contracts and 13 credit variants passed finite/local checks | verified as offline contract only |
+| Global training-config guard | 81 configs load; 43 satisfy the current minimum contract, while 38 historical/one-step configs are rejected by submitter guards before `rjob` | verified fail-closed |
 | Promoted FEPO quality result | R18 has complete 512-row/20k paired holdout and provisional positive utility/cIoU result | verified provisional reference |
 | PES normal training result | No rjob, checkpoint, worker metrics, or valid finished-manifest artifact exists | missing |
 | PES shuffled causal control | Locked until normal PES worker validity and holdout gates pass | missing |
