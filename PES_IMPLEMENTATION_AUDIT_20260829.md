@@ -60,3 +60,18 @@ PES must be `finished` with worker validity, effective-support, tail-risk, and
 PES-coverage gates all true. A failed normal worker run closes the branch
 without launching an uninterpretable control. The non-Torch monitor/static
 suite passes 7 tests after this change.
+
+## Current continuation addendum (2026-08-31)
+
+A CPU dummy-model rollout with offset, non-contiguous code-token ids exposed a
+sampler indexing defect in the native-vs-sampled evidence diagnostic: the
+sampled global vocabulary id was being used to index depth-local candidate
+logits.  The implementation now gathers with the depth-local sampled index;
+this fix was made before any PES job or checkpoint existed.  The focused
+PES/A-PES, submission-contract, and policy-isolation suite passes `28 passed`,
+including effective-support sampling and action-term rescoring.
+
+The normal PES retry remains lock-protected.  At the latest recheck
+(`2026-08-31T21:48:49+08:00`), `rjob list --namespace=ailab-dnacoding` still
+fails at unresolved proxy/DNS, the `submitted` marker is absent, and no PES
+worker, holdout, or bootstrap result exists.

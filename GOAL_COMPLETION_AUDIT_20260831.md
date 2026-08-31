@@ -29,6 +29,20 @@ proxy and direct cluster hostnames cannot be resolved.  The requested proxy
 setup endpoint is likewise unresolved.  No alternate endpoint, fabricated
 worker artifact, or PixVL write is used.
 
+## Continuation update (2026-08-31 21:53 HKT)
+
+The PES sampler was corrected before job creation: native-vs-sampled margin
+collection now uses the depth-local sampled index for offset code vocabularies.
+The focused PES/A-PES, policy-isolation, submission-contract, and evaluation
+guard suite passes `28 passed`; the 17-candidate contract probe and shell
+syntax audit also pass.  These are implementation checks only and do not
+substitute for a worker or quality result.
+
+The lock-protected PES retry is still active.  The latest retry at
+`21:48:49+08:00` returned `control_plane_unavailable status=1`; DNS for
+`h.pjlab.org.cn` remains unresolved, no `submitted` marker exists, and no PES
+checkpoint, 512-row holdout, or 20,000-bootstrap artifact can yet be claimed.
+
 ## Next valid evidence transition
 
 When the control plane becomes reachable, reconcile the existing namespace,
