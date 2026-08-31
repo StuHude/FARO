@@ -71,8 +71,10 @@ has exactly 5,120 rows, and the standalone budget validator reports 10
 configured optimizer steps.  With the approved read-only SAMTok anchor, the
 manifest guard and tail-GPPO contract both return `status: ok`.
 
-The dnacoding proxy and cluster DNS remain unresolved.  The stale retry PID is
-not a live process in this isolated workspace, so the lock-protected retry
-script is ready but must be relaunched in a persistent user session once the
-control plane is reachable.  No PES rjob, checkpoint, holdout, bootstrap
-artifact, or final-paper promotion is inferred from the preflight checks.
+The dnacoding proxy and cluster DNS remain unresolved.  The PES retry lock is
+currently held and `submit.log` has a new five-minute
+`control_plane_unavailable` heartbeat, confirming that the runner is active in
+its own process namespace.  The namespace-local PID cannot be checked with
+`kill -0` from this shell; do not launch a second copy.  No PES rjob,
+checkpoint, holdout, bootstrap artifact, or final-paper promotion is inferred
+from the preflight checks.
