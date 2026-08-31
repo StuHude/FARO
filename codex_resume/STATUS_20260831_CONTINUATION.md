@@ -91,3 +91,14 @@ runner and submit the registered 2-GPU job with all positive tags from
   tool sessions (`tmux` is unavailable and detached children are reaped), so
   the retry script must be relaunched in a live session after control-plane
   access is restored.
+
+## Launch preflight recheck (2026-08-31 22:24 HKT)
+
+- The PES manifest remains present with exactly 5,120 nonempty JSONL rows.
+- `validate_training_budget.py` returned
+  `training_budget_ok actual_rows=5120 configured_rows=5120 configured_steps=10`.
+- With the approved read-only SAMTok anchor, both
+  `projects.samtok_selective.manifests guard` and
+  `tail_gppo_contract --skip-model-hash` returned `status: ok`.
+- DNS remains unavailable for the configured proxy, so this preflight does
+  not create an rjob or imply a checkpoint/quality result.
