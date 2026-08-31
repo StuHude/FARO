@@ -15,6 +15,10 @@ No files were written under `PixVL_ailab`.
 - `tools/validate_training_budget.py` passed for the normal PES config using
   the approved read-only SAMTok checkpoint path:
   `actual_rows=5120 configured_rows=5120 configured_steps=10`.
+- `tools/run_fepo_candidate_probe.py` completed with exit code `0`: all 17
+  registered candidate contracts satisfy the minimum row/step/K checks, and
+  all 13 available credit variants produced finite probe values.  This is
+  implementation evidence only; it is not a training or quality result.
 
 ## Control-plane recheck
 
