@@ -102,3 +102,5 @@ runner and submit the registered 2-GPU job with all positive tags from
   `tail_gppo_contract --skip-model-hash` returned `status: ok`.
 - DNS remains unavailable for the configured proxy, so this preflight does
   not create an rjob or imply a checkpoint/quality result.
+- The repository-local `outputs` and `logs` files occupy approximately 33.68
+  GiB, so the 700G storage ceiling is not currently the limiting condition.
