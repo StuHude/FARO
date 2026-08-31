@@ -216,3 +216,13 @@ promotion remain pending until the dnacoding control plane is reachable.
   --skip-model-hash` returned `status: ok` with the registered 500-step anchor.
 - These launch checks are local and do not create an rjob. The control-plane
   retry remains unsubmitted; no worker or quality result is inferred.
+
+## Submission policy recheck (2026-08-31 23:58 HKT)
+
+- The static suite now includes an inventory audit over every active script
+  containing `rjob submit`. It verifies the `ailab-dnacoding` namespace,
+  `dna-*` name guard, complete `rjob_tags.txt` positive tags, and rejection of
+  a literal GPU count above 24.
+- The complete registered contract selection passes `132 tests` after this
+  audit. This is submission-policy evidence only; the control plane remains
+  unavailable and no new rjob was created.
