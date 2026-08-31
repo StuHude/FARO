@@ -35,3 +35,11 @@ def test_no_active_submitter_writes_root_logs_or_pixvl_outputs():
             continue
         for token in forbidden:
             assert token not in source, f"{path.name}: {token}"
+
+
+def test_legacy_pixvl_evidence_submitter_is_fail_closed():
+    source = (SCRIPTS / "submit_fepo_evidence_sweep.sh").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert "Legacy PixVL failure-evidence routing sweep is disabled." in source
+    assert "exit 2" in source.split("ROOT=", 1)[0]
