@@ -268,7 +268,7 @@ def test_formal_adapter_requires_finished_standalone_run(tmp_path):
         validate_formal_adapter(external, output_root)
 
 
-def test_submit_uses_16gpu_partition_tags_below_eight(tmp_path):
+def test_submit_uses_registered_tags_below_eight(tmp_path):
     faro_root = tmp_path / "FARO"
     (faro_root / "tools").mkdir(parents=True)
     os.symlink(
@@ -282,8 +282,8 @@ def test_submit_uses_16gpu_partition_tags_below_eight(tmp_path):
     holdout_schema = faro_root / "holdout.jsonl"
     write_schema(train_schema, "train")
     write_schema(holdout_schema, "holdout")
-    (faro_root / "rjob_tags.txt").write_text("wrong-tag\n", encoding="utf-8")
-    (faro_root / "rjob_tags_16gpu_partition.txt").write_text("required-tag\n", encoding="utf-8")
+    (faro_root / "rjob_tags.txt").write_text("required-tag\n", encoding="utf-8")
+    (faro_root / "rjob_tags_16gpu_partition.txt").write_text("wrong-tag\n", encoding="utf-8")
     model = tmp_path / "model"
     model.mkdir()
     (model / "config.json").write_text("{}", encoding="utf-8")
@@ -304,7 +304,7 @@ def test_submit_uses_16gpu_partition_tags_below_eight(tmp_path):
         "TRAIN_SCHEMA": str(train_schema),
         "HOLDOUT_SCHEMA": str(holdout_schema),
         "GPU_COUNT": "4",
-        "TAGS_FILE": str(faro_root / "rjob_tags.txt"),
+        "TAGS_FILE": str(faro_root / "rjob_tags_16gpu_partition.txt"),
     }
     subprocess.run(
         ["bash", str(REPO_ROOT / "scripts" / "submit_action_margin_diag.sh")],

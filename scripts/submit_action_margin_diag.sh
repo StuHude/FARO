@@ -12,14 +12,9 @@ HOLDOUT_SCHEMA=${HOLDOUT_SCHEMA:-$FARO_ROOT/data/fepo_existence/grefcoco_selecti
 OUTPUT_ROOT=${OUTPUT_ROOT:-$FARO_ROOT/evals/action_margin_diag}
 GPU_COUNT=${GPU_COUNT:-8}
 JOB_NAME=${JOB_NAME:-dna-samtok-action-margin-${GPU_COUNT}g}
-# The action-margin diagnostic may run on the 16-GPU partition when it is
-# downgraded below eight GPUs.  Its positive-tag allowlist is distinct from
-# the regular namespace list; do not let a stale caller override that choice.
-if (( GPU_COUNT < 8 )); then
-  TAGS_FILE=$FARO_ROOT/rjob_tags_16gpu_partition.txt
-else
-  TAGS_FILE=${TAGS_FILE:-$FARO_ROOT/rjob_tags.txt}
-fi
+# Every dnacoding job uses the complete registered positive-tag allowlist,
+# including adaptive evaluation retries below eight GPUs.
+TAGS_FILE=$FARO_ROOT/rjob_tags.txt
 
 case "$JOB_NAME" in dna-*) ;; *) echo "JOB_NAME must start with dna-" >&2; exit 2 ;; esac
 if (( GPU_COUNT < 1 || GPU_COUNT > 8 )); then echo "GPU_COUNT must be 1..8" >&2; exit 2; fi
