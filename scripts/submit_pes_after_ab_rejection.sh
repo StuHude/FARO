@@ -4,6 +4,7 @@ FARO_ROOT=${FARO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 AB_EVAL=${AB_EVAL:-$FARO_ROOT/evals/action_budget_native_rank_local_vs_matched_sft_bootstrap20k.json}
 STATE=${STATE:-$FARO_ROOT/logs/pes_submit}
 INTERVAL=${INTERVAL:-300}
+PROXY_SETUP_URL=${PROXY_SETUP_URL:-http://deploy.i.h.pjlab.org.cn/infra/scripts/setup_proxy.sh}
 mkdir -p "$STATE"
 exec 9>"$STATE/.lock"
 flock -n 9 || exit 0
@@ -26,6 +27,14 @@ ok = (d.get("promotion_gate") is False or d.get("ci_corrected_promotion_gate") i
 raise SystemExit(0 if ok else 1)
 PY
 }
+refresh_proxy_best_effort() {
+  command -v curl >/dev/null 2>&1 || return 0
+  local setup
+  setup=$(curl -fsSL --max-time 20 "$PROXY_SETUP_URL" 2>/dev/null) || return 0
+  [[ -n "$setup" ]] || return 0
+  # The internal setup script exports the proxy variables in this shell.
+  source /dev/stdin <<<"$setup" 2>/dev/null || true
+}
 marker="$STATE/submitted"
 while [[ ! -s "$marker" ]]; do
   ab_rejected || { sleep "$INTERVAL"; continue; }
@@ -35,6 +44,7 @@ while [[ ! -s "$marker" ]]; do
   set -e
   if (( rc != 0 )); then
     printf '%s control_plane_unavailable status=%s\n' "$(date -Is)" "$rc" >> "$STATE/submit.log"
+    refresh_proxy_best_effort
     sleep "$INTERVAL"; continue
   fi
   existing=$(printf '%s\n' "$listing" | grep -E 'dna-fepo-predicted-evidence-scope-10step-2g' | head -1 || true)

@@ -80,6 +80,17 @@ def test_pes_transition_markers_are_recoverable_after_shell_restart():
     assert "submit_pes_after_ab_rejection.sh" in late
 
 
+def test_pes_retry_refreshes_internal_proxy_after_control_plane_failure():
+    source = (ROOT / "scripts" / "submit_pes_after_ab_rejection.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "PROXY_SETUP_URL=${PROXY_SETUP_URL:-http://deploy.i.h.pjlab.org.cn/infra/scripts/setup_proxy.sh}" in source
+    assert "refresh_proxy_best_effort()" in source
+    assert 'curl -fsSL --max-time 20 "$PROXY_SETUP_URL"' in source
+    assert 'source /dev/stdin <<<"$setup"' in source
+    assert "refresh_proxy_best_effort" in source.split("control_plane_unavailable", 1)[1]
+
+
 def test_finalizer_accepts_closed_pv_training_gate_without_holdout():
     source = (ROOT / "scripts" / "monitor_finalize_matched_sft_pv.sh").read_text(
         encoding="utf-8"
