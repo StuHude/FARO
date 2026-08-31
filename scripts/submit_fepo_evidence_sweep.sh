@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cat >&2 <<'MSG'
+Legacy PixVL failure-evidence routing sweep is disabled. Use the registered
+SAMTok-only FEPO/PES entry points; PixVL is permitted only for evaluation and
+data interfaces.
+MSG
+exit 2
+
 ROOT=${ROOT:-/mnt/shared-storage-user/dnacoding/wuyucheng/workspace/Nemotrontiaozheng/PixVL_ailab}
 MODEL=${MODEL:-$ROOT/checkpoints/SAMTok/Qwen3-VL-4B-SAMTok-co}
 FARO_ROOT=${FARO_ROOT:-/mnt/shared-storage-user/dnacoding/wuyucheng/workspace/Nemotrontiaozheng/Faro_ailab/FARO}
