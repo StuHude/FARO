@@ -62,11 +62,13 @@ negative control only after normal PES passes, and select a final survivor
 before official transfer.  Until these artifacts exist, R18 remains the only
 defensible method claim and the overall goal remains active.
 
-## Current recheck (2026-08-31 22:24 HKT)
+## Current recheck (2026-08-31 22:44 HKT)
 
 The local repository is clean and now includes the corrected SAMTok-only
-README; the latest local commit is `bb81bc4` (the README itself was recorded
-in `118a876`).  The PES training manifest still
+README and the artifact-backed final results table; the latest local commit is
+`94d17d2` (the README itself was recorded in `118a876`).  The 19 completed
+rows in `FINAL_RESULTS_TABLE_20260831.md` were machine-checked against their
+JSON artifacts with `errors=0`.  The PES training manifest still
 has exactly 5,120 rows, and the standalone budget validator reports 10
 configured optimizer steps.  With the approved read-only SAMTok anchor, the
 manifest guard and tail-GPPO contract both return `status: ok`.
