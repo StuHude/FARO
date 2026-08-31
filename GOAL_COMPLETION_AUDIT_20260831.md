@@ -42,6 +42,11 @@ The complete `tests/test_*static.py` suite was also rerun in the worker-like
 environment and passed `120 tests`, covering every registered candidate and
 the shared submission/evaluation guards.
 
+The worker launch preflight was executed with the approved SAMTok anchor and
+PES manifest; both `manifests guard` and `tail_gppo_contract --skip-model-hash`
+returned `status: ok`.  This validates launch-time contracts only and does not
+constitute a training or quality result.
+
 The lock-protected PES retry is still active.  The latest retry at
 `21:48:49+08:00` returned `control_plane_unavailable status=1`; DNS for
 `h.pjlab.org.cn` remains unresolved, no `submitted` marker exists, and no PES

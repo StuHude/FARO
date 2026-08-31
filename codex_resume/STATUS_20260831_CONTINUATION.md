@@ -39,6 +39,11 @@ No files were written under `PixVL_ailab`.
   `sa2va` environment with the pinned transformer source: `120 passed`.  This
   covers all registered candidate contracts, SAMTok-only/path guards, positive
   tags, training budgets, adaptive GPU fallback, and PES transition gates.
+- The actual worker preflight command was run locally with the approved
+  SAMTok anchor, 5,120-row manifest, and PES config: both
+  `projects.samtok_selective.manifests guard` and
+  `tail_gppo_contract --skip-model-hash` returned `status: ok`.  This confirms
+  the launch-time path/contract checks, but is not GPU training evidence.
 - A consistency audit found the standalone A-PES probe had reversed the
   registered gap direction.  `tools/apes_probe.py` and its synthetic tests now
   use the same larger-gap-is-confident (`>=`) semantics as the trainer; the
