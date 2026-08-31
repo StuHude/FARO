@@ -38,6 +38,10 @@ guard suite passes `28 passed`; the 17-candidate contract probe and shell
 syntax audit also pass.  These are implementation checks only and do not
 substitute for a worker or quality result.
 
+The complete `tests/test_*static.py` suite was also rerun in the worker-like
+environment and passed `120 tests`, covering every registered candidate and
+the shared submission/evaluation guards.
+
 The lock-protected PES retry is still active.  The latest retry at
 `21:48:49+08:00` returned `control_plane_unavailable status=1`; DNS for
 `h.pjlab.org.cn` remains unresolved, no `submitted` marker exists, and no PES
