@@ -47,3 +47,12 @@ checkpoint, worker metrics, holdout, or bootstrap artifact.  They are not
 included as zero-valued rows.  The current defensible method claim therefore
 remains FEPO-R18 until the normal PES worker and all preregistered gates are
 completed.
+
+## Table verification
+
+On 2026-08-31, a repository-local check parsed all 19 completed rows and
+compared both displayed deltas (mean and CI) against their mapped JSON
+artifacts.  It checked `num_paired == 512` and
+`bootstrap_repeats == 20000` for both metrics.  Result: `rows_checked=19`,
+`errors=0`.  The check used rounded display values only; raw JSON remains the
+source of record.
