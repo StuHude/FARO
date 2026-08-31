@@ -172,3 +172,15 @@ promotion remain pending until the dnacoding control plane is reachable.
 - The latest local commits are `9b73b46` (proxy refresh) and `3456aa8`
   (budget-audit documentation). These are local evidence only until GitHub
   connectivity is restored.
+
+## Current recheck (2026-08-31 23:46 HKT)
+
+- The same complete static selection, including the normal and shuffled PES
+  transition scripts, passes `131 tests` after the proxy-refresh update.
+- Both PES transition scripts now refresh the internal proxy configuration
+  best-effort after a failed `rjob list`; shell syntax checks pass. The
+  normal retry remains the only active instance, with its lock held and no
+  `submitted` marker.
+- The latest normal retry heartbeat remains
+  `2026-08-31T23:39:17+08:00 control_plane_unavailable status=1`; DNS/API
+  recovery has not occurred, so no training or evaluation artifact is claimed.
