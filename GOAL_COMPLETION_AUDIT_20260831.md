@@ -102,3 +102,22 @@ The normal PES retry has no submission marker. The latest control-plane
 recheck still fails before API access because the configured proxy hostname
 cannot be resolved. Therefore there is still no PES checkpoint, worker
 metrics, 512-row holdout, shuffled control, or final promotion result.
+
+## Cross-day completion recheck (2026-09-01 00:05 HKT)
+
+- The complete registered static contract selection passes `132 tests`,
+  including the inventory audit for every active `rjob submit` script. The
+  audit confirms the `ailab-dnacoding` namespace, `dna-*` naming guards,
+  complete positive tags, and the 24-GPU ceiling.
+- The exact PES launch preflight remains valid with the approved read-only
+  SAMTok anchor: `training_budget_ok actual_rows=5120
+  configured_rows=5120 configured_steps=10`, manifest guard `status: ok`, and
+  tail-GPPO contract `status: ok`.
+- The PES retryer is still single-instance and lock-protected. Its latest
+  heartbeat is `2026-09-01T00:03:20+08:00 control_plane_unavailable status=1`;
+  `logs/pes_submit/submitted` is absent. Direct `rjob list` still fails during
+  proxy DNS resolution.
+- FARO remains below the resource ceiling (approximately 39G at the last
+  storage audit), and no new worker artifact exists. The PES worker result,
+  shuffled control, complete holdout/bootstrap comparisons, final survivor,
+  and official transfer therefore remain missing; the goal is not complete.
