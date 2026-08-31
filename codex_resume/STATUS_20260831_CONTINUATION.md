@@ -59,8 +59,10 @@ worker metric, holdout, or bootstrap result is inferred.
 
 The lock-protected normal PES retry state is stored at `logs/pes_submit/`; its
 latest records continue to report `control_plane_unavailable status=1` at
-five-minute intervals.  The shuffled PES branch remains locked until a valid
-normal PES worker result exists.
+five-minute intervals.  The previous retry process is not currently alive in
+this isolated workspace (the stale `pid` is not a running submitter), so no
+claim of continuous background polling is made.  The shuffled PES branch
+remains locked until a valid normal PES worker result exists.
 
 ## Next executable action
 
@@ -85,3 +87,7 @@ runner and submit the registered 2-GPU job with all positive tags from
   `httpproxy-headless.kubebrain.svc.pjlab.local`; `logs/pes_submit/submitted`
   is absent.  No PES job, checkpoint, holdout, or bootstrap artifact is
   inferred from this failure.
+- A detached retry process cannot persist across this workspace's isolated
+  tool sessions (`tmux` is unavailable and detached children are reaped), so
+  the retry script must be relaunched in a live session after control-plane
+  access is restored.
