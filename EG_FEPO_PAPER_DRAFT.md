@@ -317,3 +317,24 @@ FEPO-R18, and no PES quality or causal evidence claim is made. Completion
 still requires a valid 5,120-row/10-step PES worker, its full 512-row
 image-disjoint evaluation, the shuffled control, and paired 20,000-bootstrap
 comparisons before any survivor can receive official transfer evaluation.
+
+## 12. Authoritative continuation update (2026-08-31)
+
+The implementation and claim boundary were re-audited after the PES sampler
+fix.  The native-versus-sampled margin now gathers the sampled action using
+its depth-local support index, including non-contiguous grammar vocabularies;
+the behavior probabilities, evidence states, scope masks, and advantages are
+detached as required.  The worker-like static suite passes 120 tests, and the
+CPU candidate/A-PES probes pass their 5,120-row, 10-step, K=4 contracts.  These
+are implementation checks only.
+
+The approved SAMTok anchor, 5,120-row PES manifest, manifest guard, and
+tail-GPPO contract all pass launch preflight.  The normal PES submitter uses
+the dnacoding namespace, every positive tag in `rjob_tags.txt`, a `dna-`
+prefix, and the fixed evaluation ladder.  Its lock is held and its log has
+continued five-minute `control_plane_unavailable` heartbeats, while the
+cluster/proxy DNS remains unresolved.  No PES rjob, checkpoint, holdout, or
+bootstrap result is therefore claimed.  Once the control plane returns, the
+normal worker must pass its validity/evidence-coverage gates before the
+shuffled control is submitted; only then can the final method and official
+transfer evaluation be selected.
