@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -23,6 +24,27 @@ def test_rjob_submitters_use_the_registered_positive_tag_file():
                 '--positive-tags="$positive_tags"',
             )
         ), path.name
+
+
+def test_active_rjob_submitters_pin_dnacoding_namespace_and_dna_names():
+    disabled = {
+        "submit_samtok_sft.sh",
+        "submit_fepo_evidence_sweep.sh",
+        "submit_fepo_schema_train_smoke.sh",
+    }
+    for path in SCRIPTS.glob("submit_*.sh"):
+        source = path.read_text(encoding="utf-8", errors="replace")
+        if "rjob submit" not in source or path.name in disabled:
+            continue
+        assert "--namespace=ailab-dnacoding" in source, path.name
+        assert "rjob_tags.txt" in source, path.name
+        assert "--positive-tags=" in source, path.name
+        has_name_guard = bool(
+            re.search(r'case\s+"\$JOB_(?:NAME|PREFIX)"\s+in\s*dna-\*\)', source)
+            or re.search(r'"\$JOB_PREFIX"\s*==\s*dna-\*', source)
+        )
+        assert has_name_guard, path.name
+        assert not any(token in source for token in ("--gpu=32", "--gpu 32")), path.name
 
 
 def test_no_active_submitter_writes_root_logs_or_pixvl_outputs():
