@@ -5168,6 +5168,13 @@ def main() -> None:
             consumed_pair_count >= int(method.get("minimum_consumed_pairs", 2560))
             and consumed_row_count >= int(method.get("minimum_consumed_rows", 5120))
         )
+        coverage_flag = torch.tensor(
+            [int(coverage_gate_passed) if accelerator.is_main_process else 0],
+            dtype=torch.int64,
+            device=accelerator.device,
+        )
+        torch.distributed.broadcast(coverage_flag, src=0)
+        coverage_gate_passed = bool(coverage_flag.item())
         if accelerator.is_main_process:
             metrics["tail_gppo"].update(
                 {
