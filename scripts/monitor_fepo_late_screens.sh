@@ -306,6 +306,35 @@ PY
     (STATE="$PES_SHUFFLED_STATE" bash "$FARO_ROOT/scripts/submit_pes_shuffled_after_pes_completion.sh" >> "$PES_SHUFFLED_STATE/runner.log" 2>&1) &
     heartbeat+=" pes_shuffled_submit=started"
   fi
+  # Full-data PES has its own 640-step normal/control pair. Keep it
+  # independent from the legacy 10-step transition above.
+  PES_FULL_SHUFFLED_STATE="$FARO_ROOT/logs/pes_full_data_shuffled_submit"
+  if { [[ ! -f "$PES_FULL_SHUFFLED_STATE/runner_started" ]] ||
+       ! runner_active "$PES_FULL_SHUFFLED_STATE" "submit_samtok_tb_gppo_predicted_evidence_scope_full_data_shuffled.sh"; } &&
+     [[ -s "$FARO_ROOT/outputs/samtok_selective/fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_full_data_640step_2gpu/metrics.json" ]] &&
+     python3 - "$FARO_ROOT/outputs/samtok_selective/fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_full_data_640step_2gpu/metrics.json" <<'PY'
+import json, sys
+from pathlib import Path
+try:
+    value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+gate = value.get("validity_gate") or {}
+tail = value.get("tail_gppo") or {}
+ready = (
+    value.get("status") == "finished"
+    and gate.get("passed") is True
+    and gate.get("full_data_coverage_gate_passed") is True
+    and int(tail.get("consumed_row_count", 0)) >= 5120
+)
+raise SystemExit(0 if ready else 1)
+PY
+  then
+    mkdir -p "$PES_FULL_SHUFFLED_STATE"
+    printf '%s\n' "$(date -Is)" > "$PES_FULL_SHUFFLED_STATE/runner_started"
+    (bash "$FARO_ROOT/scripts/submit_samtok_tb_gppo_predicted_evidence_scope_full_data_shuffled.sh" >> "$PES_FULL_SHUFFLED_STATE/runner.log" 2>&1) &
+    heartbeat+=" pes_full_data_shuffled_submit=started"
+  fi
   # Once both PES evaluators finish, finalize all paired 512-row/20k reports
   # under a separate lock. A failed local analysis is retried on the next
   # heartbeat; no training or evaluator job is submitted by this transition.
