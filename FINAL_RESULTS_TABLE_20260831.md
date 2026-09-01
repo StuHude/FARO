@@ -42,11 +42,13 @@ display; the JSON files remain authoritative.
 
 ## Open evidence
 
-PES-FEPO and its mandatory seed-1907 shuffled-evidence control have no rjob,
-checkpoint, worker metrics, holdout, or bootstrap artifact.  They are not
-included as zero-valued rows.  The current defensible method claim therefore
-remains FEPO-R18 until the normal PES worker and all preregistered gates are
-completed.
+PES-FEPO has a submitted normal rjob
+`dna-fepo-predicted-evidence-scope-10step-2g-70ca4`, currently `Inqueue` with
+a `STARTING` replica.  Its mandatory seed-1907 shuffled-evidence control is
+still gated on a valid normal worker.  Neither arm has a checkpoint, worker
+metrics, holdout, or bootstrap artifact yet, so neither is included as a
+zero-valued row.  The current defensible method claim remains FEPO-R18 until
+the normal PES worker and all preregistered gates are completed.
 
 ## Table verification
 

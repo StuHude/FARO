@@ -188,8 +188,10 @@ detached student evidence: mean normalized entropy plus the native-versus-
 sampled logit gap. Confident trajectories update the first changed depth,
 ambiguous trajectories the first two, and unsupported trajectories receive an
 empty positive scope. A seed-1907 shuffled-evidence arm is the mandatory
-negative control. The normal and shuffled jobs have not yet been created
-because the dnacoding control plane cannot resolve `h.pjlab.org.cn`; no PES
-quality claim exists. Both require the same 5,120-row/10-step/K=4 worker gate,
+negative control. The normal job
+`dna-fepo-predicted-evidence-scope-10step-2g-70ca4` is now submitted and is
+waiting in `Inqueue/STARTING`; the shuffled job remains gated on a valid
+normal worker. No PES quality claim exists yet. Both require the same
+5,120-row/10-step/K=4 worker gate,
 complete 512-row holdout, zero invalid outputs, and 20,000 paired bootstrap
 before any promotion or official transfer evaluation.
