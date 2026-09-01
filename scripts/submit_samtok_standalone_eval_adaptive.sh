@@ -97,8 +97,13 @@ if value.get("promotion_gate") is False or value.get("ci_corrected_promotion_gat
     raise SystemExit("candidate evaluation branch is already closed")
 PY
 fi
-if [[ "$(basename "$OUTPUT")" == predicted_evidence_scope_shuffled_holdout512 ]]; then
-  python3 - "$FARO_ROOT/outputs/samtok_selective/fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_10step_2gpu/metrics.json" <<'PY'
+if [[ "$(basename "$OUTPUT")" == predicted_evidence_scope_shuffled_holdout512 ||
+      "$(basename "$OUTPUT")" == predicted_evidence_scope_full_data_shuffled_holdout512 ]]; then
+  normal_metrics="$FARO_ROOT/outputs/samtok_selective/fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_10step_2gpu/metrics.json"
+  if [[ "$(basename "$OUTPUT")" == predicted_evidence_scope_full_data_shuffled_holdout512 ]]; then
+    normal_metrics="$FARO_ROOT/outputs/samtok_selective/fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_full_data_640step_2gpu/metrics.json"
+  fi
+  python3 - "$normal_metrics" <<'PY'
 import json
 import sys
 from pathlib import Path

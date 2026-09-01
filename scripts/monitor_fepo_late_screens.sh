@@ -24,6 +24,7 @@ declare -a CANDIDATES=(
   "action_budget_native_rank_local|$FARO_ROOT/outputs/samtok_selective/fepo_tb_gppo_plain_rank_unified_action_budget_native_rank_local_10step_2gpu"
   "predicted_evidence_scope|$FARO_ROOT/outputs/samtok_selective/fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_10step_2gpu"
   "predicted_evidence_scope_shuffled|$FARO_ROOT/outputs/samtok_selective/fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_shuffled_10step_2gpu"
+  "predicted_evidence_scope_full_data|$FARO_ROOT/outputs/samtok_selective/fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_full_data_640step_2gpu"
   # Matched-budget continued-SFT control for the selected R18 policy.  It is
   # evaluated with the same 512-row schema and adaptive GPU ladder; no RL
   # claim is made until this control is paired against R18.
@@ -70,6 +71,11 @@ checks = (
 )
 if "predicted_evidence_scope" in str(provenance.get("stage", "")):
     checks = checks + (validity.get("pes_coverage_gate_passed") is True,)
+if "full_data" in str(provenance.get("stage", "")):
+    checks = checks + (
+        validity.get("full_data_coverage_gate_passed") is True,
+        int(validity.get("consumed_row_count", 0)) >= 5120,
+    )
 raise SystemExit(0 if all(checks) else 1)
 PY
 }
