@@ -60,3 +60,20 @@ before the 512-row/20,000-bootstrap evaluation and shuffled control.
   registered two-GPU request.
 - The evaluation fallback ladder remains reserved for evaluation jobs only;
   the PES training job stays at its preregistered two GPUs.
+
+## 03:56 HKT continuation recheck
+
+- `rjob get` still reports the same showname `dna-fepo-predicted-evidence-scope-10step-2g-1788290427`
+  as `Inqueue`, with replica `dna-fepo-predicted-evidence-scope-10step-2g-70ca4-7t8bb`
+  in `STARTING`; no worker node is assigned.
+- The latest control-plane event remains gang-unschedulable: `24 Insufficient
+  nvidia.com/gpu`, one CPU shortage, one selector mismatch, and 1,940 nodes
+  outside the positive-tag/node-label selector. This confirms a resource queue
+  wait rather than a submission, DNS, proxy, or training error.
+- The late-screen monitor heartbeat is still advancing once per minute. PES
+  normal and shuffled evaluation markers remain `waiting`; no metrics,
+  checkpoint, holdout, or bootstrap artifact exists, so no result is promoted
+  or inferred.
+- Static checks reconfirm the PES manifest has 5,120 rows, the approved
+  SAMTok-only initialization path, and all eight positive tags. Workspace use
+  remains approximately 39G; no files were written under `PixVL_ailab`.
