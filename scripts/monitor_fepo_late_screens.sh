@@ -253,7 +253,8 @@ PY
   fi
   # PES-FEPO is unlocked only by the complete, rejected AB holdout.
   PES_STATE="$FARO_ROOT/logs/pes_submit"
-  if { [[ ! -f "$PES_STATE/runner_started" ]] ||
+  if [[ ! -s "$PES_STATE/submitted" ]] &&
+     { [[ ! -f "$PES_STATE/runner_started" ]] ||
        ! runner_active "$PES_STATE" "submit_pes_after_ab_rejection.sh"; } &&
      [[ -s "$FARO_ROOT/evals/action_budget_native_rank_local_vs_matched_sft_bootstrap20k.json" ]] &&
      python3 - "$FARO_ROOT/evals/action_budget_native_rank_local_vs_matched_sft_bootstrap20k.json" <<'PY'
