@@ -77,3 +77,8 @@ before the 512-row/20,000-bootstrap evaluation and shuffled control.
 - Static checks reconfirm the PES manifest has 5,120 rows, the approved
   SAMTok-only initialization path, and all eight positive tags. Workspace use
   remains approximately 39G; no files were written under `PixVL_ailab`.
+- On this continuation pass the CPU-only A-PES contract probe passed; the
+  budget validator reported `actual_rows=5120`, `configured_rows=5120`, and
+  `configured_steps=10`. The manifest guard and tail-GPPO contract passed
+  with the registered `continued_sft_to500` SAMTok anchor. No GPU result is
+  implied by these static checks.
