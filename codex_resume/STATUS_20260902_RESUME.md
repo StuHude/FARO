@@ -50,3 +50,13 @@ before the 512-row/20,000-bootstrap evaluation and shuffled control.
   unsubmitted until normal PES and its seed-1907 shuffled control have complete
   512-row/20,000-bootstrap evidence.
 - Workspace usage remains below 40G. No files were added under `PixVL_ailab`.
+
+## 03:45 HKT scheduler evidence
+
+- `rjob events` reports the replica has remained pending since submission. The
+  latest scheduler reason is `24 Insufficient nvidia.com/gpu`, with additional
+  CPU/selector constraints across the cluster. The worker has not started, so
+  there is no training failure to debug and no reason to resubmit or alter the
+  registered two-GPU request.
+- The evaluation fallback ladder remains reserved for evaluation jobs only;
+  the PES training job stays at its preregistered two GPUs.
