@@ -171,12 +171,36 @@ def build_geometry_registry(
 def select_registered_ids(
     registry: dict[str, Any], *, schedule_per_stratum: int = SCHEDULE_PER_STRATUM,
     area_stratified: bool = False, boundary_stratified: bool = False,
+    include_sentinel: bool = False,
 ) -> dict[str, Any]:
     records = registry["records"]
     pair_ids = sorted(records, key=stable_hash)
     sentinel_ids = pair_ids[:SENTINEL_SIZE]
     eligible = [pair_id for pair_id in pair_ids if pair_id not in set(sentinel_ids)]
     fifo_ids = eligible[:FIFO_INIT_SIZE]
+    if include_sentinel:
+        # Full-data stages use every registered pair exactly once.  This is a
+        # separate schedule mode because the sentinel is normally excluded
+        # from policy batches and reserved for the risk gate.
+        if boundary_stratified or area_stratified:
+            raise ValueError("full-data schedule cannot combine stratified modes")
+        if len(pair_ids) % 4:
+            raise ValueError("full-data schedule requires pair count divisible by four")
+        batches = [pair_ids[i : i + 4] for i in range(0, len(pair_ids), 4)]
+        payload = {
+            "sentinel_pair_ids": sentinel_ids,
+            "fifo_init_pair_ids": fifo_ids,
+            "batches": batches,
+            "schedule_pair_ids": list(pair_ids),
+            "pairs_per_batch": 4,
+            "full_data_schedule": True,
+            "scheduled_pair_count": len(pair_ids),
+            "scheduled_row_count": len(pair_ids) * 2,
+        }
+        payload["schedule_sha256"] = stable_hash(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        )
+        return payload
     hard = [pair_id for pair_id in eligible if records[pair_id]["hard_geometry"]]
     ordinary = [pair_id for pair_id in eligible if not records[pair_id]["hard_geometry"]]
     if area_stratified:

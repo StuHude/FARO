@@ -108,10 +108,18 @@ UNIFIED_PREDICTED_EVIDENCE_SCOPE_STAGE = (
     "fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_10step_2gpu"
 )
 STAGES[UNIFIED_PREDICTED_EVIDENCE_SCOPE_STAGE] = 10
+UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_STAGE = (
+    "fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_full_data_640step_2gpu"
+)
+STAGES[UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_STAGE] = 640
 UNIFIED_PREDICTED_EVIDENCE_SCOPE_SHUFFLED_STAGE = (
     "fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_shuffled_10step_2gpu"
 )
 STAGES[UNIFIED_PREDICTED_EVIDENCE_SCOPE_SHUFFLED_STAGE] = 10
+UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_SHUFFLED_STAGE = (
+    "fepo_tb_gppo_plain_rank_unified_predicted_evidence_scope_full_data_shuffled_640step_2gpu"
+)
+STAGES[UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_SHUFFLED_STAGE] = 640
 UNIFIED_BOUNDARY_STRATIFIED_STAGE = (
     "fepo_tb_gppo_plain_rank_unified_boundary_stratified_native_rank_local_10step_2gpu"
 )
@@ -219,7 +227,9 @@ def validate_tail_gppo_config(
         UNIFIED_UNCERTAINTY_NATIVE_RANK_LOCAL_STAGE,
         UNIFIED_ACTION_BUDGET_NATIVE_RANK_LOCAL_STAGE,
         UNIFIED_PREDICTED_EVIDENCE_SCOPE_STAGE,
+        UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_STAGE,
         UNIFIED_PREDICTED_EVIDENCE_SCOPE_SHUFFLED_STAGE,
+        UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_SHUFFLED_STAGE,
         UNIFIED_BOUNDARY_STRATIFIED_STAGE,
         UNIFIED_CONSERVATIVE_NULL_TAIL_STAGE,
         UNIFIED_CONFIDENCE_GATED_NATIVE_RANK_LOCAL_STAGE,
@@ -238,6 +248,14 @@ def validate_tail_gppo_config(
         raise ValueError("Unified TB-GPPO stage requires unified_sentinel=true")
     if not unified and method.get("unified_sentinel") is True:
         raise ValueError("unified_sentinel is only valid for the registered unified stage")
+    if stage in {
+        UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_STAGE,
+        UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_SHUFFLED_STAGE,
+    }:
+        if method.get("full_data_schedule") is not True:
+            raise ValueError("full-data PES stage requires full_data_schedule=true")
+        if int(config["data"].get("expected_rows", 0)) < 5120:
+            raise ValueError("full-data PES requires at least 5120 configured rows")
     exact = {
         "rollouts_per_prompt": ROLLOUTS_PER_PROMPT,
         "policy_epochs": POLICY_EPOCHS,

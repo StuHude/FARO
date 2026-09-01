@@ -13,6 +13,8 @@ from projects.samtok_selective.fepo_gr_cppo_trainer import (
     score_sampled_sequences,
 )
 from projects.samtok_selective.tail_gppo_contract import (
+    UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_SHUFFLED_STAGE,
+    UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_STAGE,
     UNIFIED_PREDICTED_EVIDENCE_SCOPE_SHUFFLED_STAGE,
     UNIFIED_PREDICTED_EVIDENCE_SCOPE_STAGE,
     validate_tail_gppo_config,
@@ -43,6 +45,19 @@ def test_pes_configs_and_negative_control_are_fixed(monkeypatch, tmp_path):
     validate_tail_gppo_config(shuffled)
     assert shuffled["tail_gppo"]["pes_evidence_shuffle"] is True
     assert shuffled["tail_gppo"]["pes_evidence_shuffle_seed"] == 1907
+
+
+def test_full_data_pes_configs_require_explicit_coverage(monkeypatch, tmp_path):
+    for stage in (
+        UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_STAGE,
+        UNIFIED_PREDICTED_EVIDENCE_SCOPE_FULL_DATA_SHUFFLED_STAGE,
+    ):
+        config = _load(stage, monkeypatch, tmp_path)
+        validate_tail_gppo_config(config)
+        assert config["optimizer"]["max_steps"] == 640
+        assert config["tail_gppo"]["full_data_schedule"] is True
+        assert config["tail_gppo"]["minimum_consumed_rows"] == 5120
+        assert config["tail_gppo"]["minimum_consumed_pairs"] == 2560
 
 
 def test_pes_scope_and_loss_are_detached_and_finite():

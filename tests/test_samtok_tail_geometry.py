@@ -8,6 +8,7 @@ from projects.samtok_selective.tail_geometry import (
     boundary_iou,
     geometry_features,
     mask_boundary,
+    select_registered_ids,
     shuffled_hard_flags,
 )
 
@@ -56,3 +57,17 @@ def test_shuffled_flags_preserve_counts_and_are_deterministic():
     assert first == second
     assert sum(first.values()) == sum(flags.values()) == 8
     assert first != flags
+
+
+def test_full_data_schedule_covers_every_pair_including_sentinel():
+    records = {
+        f"pair-{index:04d}": {"hard_geometry": index % 2 == 0}
+        for index in range(2560)
+    }
+    schedule = select_registered_ids({"records": records}, include_sentinel=True)
+    assert schedule["full_data_schedule"] is True
+    assert schedule["scheduled_pair_count"] == 2560
+    assert schedule["scheduled_row_count"] == 5120
+    assert len(schedule["batches"]) == 640
+    assert len(set(schedule["schedule_pair_ids"])) == 2560
+    assert set(schedule["sentinel_pair_ids"]).issubset(schedule["schedule_pair_ids"])

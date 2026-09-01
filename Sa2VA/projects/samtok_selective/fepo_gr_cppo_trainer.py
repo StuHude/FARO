@@ -2314,6 +2314,9 @@ def _build_dataloader(
         boundary_stratified_schedule = bool(
             config.get("tail_gppo", {}).get("boundary_stratified_schedule", False)
         )
+        full_data_schedule = bool(
+            config.get("tail_gppo", {}).get("full_data_schedule", False)
+        )
         registry = build_geometry_registry(
             dataset.rows,
             area_stratified=area_stratified_schedule,
@@ -2323,6 +2326,7 @@ def _build_dataloader(
             registry,
             area_stratified=area_stratified_schedule,
             boundary_stratified=boundary_stratified_schedule,
+            include_sentinel=full_data_schedule,
         )
         sampler = RegisteredPairedBatchSampler(dataset, schedule["batches"])
     else:
@@ -2701,6 +2705,9 @@ def main() -> None:
                 else []
             ),
             "arm": method["arm"],
+            "full_data_schedule": bool(schedule.get("full_data_schedule", False)),
+            "scheduled_pair_count": int(schedule.get("scheduled_pair_count", len(schedule["schedule_pair_ids"]))),
+            "scheduled_row_count": int(schedule.get("scheduled_row_count", len(schedule["schedule_pair_ids"]) * 2)),
         }
         if accelerator.is_main_process:
             write_json_atomic(output_dir / "tail_geometry_registry.json", registry)
@@ -2993,10 +3000,12 @@ def main() -> None:
     primal_dual_observations = 0
     pes_state_counts = torch.zeros(3, dtype=torch.long, device=accelerator.device)
     pes_state_observations = 0
+    consumed_pair_ids: set[str] = set()
     while outer_step < max_steps:
         for samples in dataloader:
             if outer_step >= max_steps:
                 break
+            consumed_pair_ids.update(str(sample["pair_id"]) for sample in samples)
             positives = [sample for sample in samples if not bool(sample["no_target"])]
             negatives = [sample for sample in samples if bool(sample["no_target"])]
             if not positives or not negatives or len(positives) != len(negatives):
@@ -5133,6 +5142,43 @@ def main() -> None:
                 }
             )
 
+    full_data_schedule_enabled = bool(
+        tail_enabled and method.get("full_data_schedule") is True
+    )
+    consumed_pair_count = 0
+    consumed_row_count = 0
+    if full_data_schedule_enabled:
+        # Each rank writes its observed IDs; the shared output directory lets
+        # the main process compute an exact distributed union after the final
+        # dataloader step instead of trusting manifest size or step count.
+        rank_ids_path = output_dir / f"consumed_pair_ids_rank{accelerator.process_index}.json"
+        write_json_atomic(rank_ids_path, sorted(consumed_pair_ids))
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            all_ids: set[str] = set()
+            for rank in range(accelerator.num_processes):
+                path = output_dir / f"consumed_pair_ids_rank{rank}.json"
+                if path.is_file():
+                    all_ids.update(str(value) for value in json.loads(path.read_text(encoding="utf-8")))
+            consumed_pair_count = len(all_ids)
+            consumed_row_count = consumed_pair_count * 2
+    coverage_gate_passed = True
+    if full_data_schedule_enabled:
+        coverage_gate_passed = bool(
+            consumed_pair_count >= int(method.get("minimum_consumed_pairs", 2560))
+            and consumed_row_count >= int(method.get("minimum_consumed_rows", 5120))
+        )
+        if accelerator.is_main_process:
+            metrics["tail_gppo"].update(
+                {
+                    "consumed_pair_count": consumed_pair_count,
+                    "consumed_row_count": consumed_row_count,
+                    "minimum_consumed_pairs": int(method.get("minimum_consumed_pairs", 2560)),
+                    "minimum_consumed_rows": int(method.get("minimum_consumed_rows", 5120)),
+                    "full_data_coverage_gate_passed": coverage_gate_passed,
+                }
+            )
+
     gate_values = torch.tensor(
         [
             float(nonconstant_reward_groups),
@@ -5372,6 +5418,7 @@ def main() -> None:
         and representation_gate_passed
         and anchor_kl_gate_passed
         and pes_coverage_gate_passed
+        and coverage_gate_passed
     )
     if accelerator.is_main_process:
         metrics["validity_gate"] = {
@@ -5414,6 +5461,9 @@ def main() -> None:
             "anchor_kl_max_nats": anchor_kl_max,
             "pes_coverage_gate_passed": pes_coverage_gate_passed,
             "pes_state_fractions": pes_state_fractions,
+            "full_data_coverage_gate_passed": coverage_gate_passed,
+            "consumed_pair_count": consumed_pair_count,
+            "consumed_row_count": consumed_row_count,
             "tail_mean_margin_violation_rate": tail_mean_violation_rate,
             "final_tail_margin_delta_q10": final_tail_margin_delta_q10,
             "final_tail_margin_violation_rate": final_tail_margin_violation_rate,
