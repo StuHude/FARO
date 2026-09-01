@@ -36,3 +36,17 @@
 
 After the PES worker leaves the queue, require the full worker validity gates
 before the 512-row/20,000-bootstrap evaluation and shuffled control.
+
+## 03:42 HKT recheck
+
+- `rjob list` still reports `dna-fepo-predicted-evidence-scope-10step-2g-70ca4`
+  as `Inqueue` with a `STARTING` replica and no assigned node. This is a
+  scheduler wait, not a submission or Python failure.
+- The local candidate and APES contract probes passed again. No PES checkpoint,
+  worker metrics, holdout, or bootstrap result exists yet.
+- A read-only audit of completed screens confirms that R18 is the only robust
+  positive reference; R18-100 and the matched continued-SFT control define the
+  required bar for PES. The conditional mass-aware PES follow-up remains
+  unsubmitted until normal PES and its seed-1907 shuffled control have complete
+  512-row/20,000-bootstrap evidence.
+- Workspace usage remains below 40G. No files were added under `PixVL_ailab`.
