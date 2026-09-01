@@ -12,6 +12,14 @@ OUTPUT=${OUTPUT:?OUTPUT is required}
 POLL_SECONDS=${POLL_SECONDS:-300}
 GPU_LEVELS=(8 6 4 2 1)
 
+# The login workspace exports a proxy that is not routable to the kube-brain
+# API. Keep every control-plane call proxy-free even when this script is
+# launched by a long-lived monitor that inherited the workspace environment.
+rjob_clean() {
+  env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+      -u all_proxy -u ALL_PROXY -u no_proxy -u NO_PROXY rjob "$@"
+}
+
 for gpu in "${GPU_LEVELS[@]}"; do
   job_name="${JOB_PREFIX}-${gpu}g-$(date +%s)"
   echo "SUBMIT gpu=${gpu} job=${job_name}"
@@ -19,7 +27,9 @@ for gpu in "${GPU_LEVELS[@]}"; do
   submit_log=$(JOB_NAME="$job_name" GPU_COUNT="$gpu" ADAPTER="$ADAPTER" ANCHOR_ADAPTER="$ANCHOR_ADAPTER" OUTPUT="$OUTPUT" \
     CONFIG="${CONFIG:-}" REFSEG_SCHEMA="${REFSEG_SCHEMA:-}" MASKCAP_SCHEMA="${MASKCAP_SCHEMA:-}" \
     GEOMETRY_SCHEMA="${GEOMETRY_SCHEMA:-}" EXISTENCE_SCHEMA="${EXISTENCE_SCHEMA:-}" \
-    bash "$SCRIPT_DIR/submit_fepo_eval_sharded.sh" 2>&1)
+    env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+        -u all_proxy -u ALL_PROXY -u no_proxy -u NO_PROXY \
+        bash "$SCRIPT_DIR/submit_fepo_eval_sharded.sh" 2>&1)
   submit_status=$?
   set -e
   printf '%s\n' "$submit_log"
@@ -40,7 +50,7 @@ for gpu in "${GPU_LEVELS[@]}"; do
   # evaluation merely because the status query timed out.
   while :; do
     set +e
-    status=$(rjob list "$query_name" --namespace=ailab-dnacoding 2>&1)
+    status=$(rjob_clean list "$query_name" --namespace=ailab-dnacoding 2>&1)
     status_rc=$?
     set -e
     echo "$status"
@@ -62,5 +72,5 @@ for gpu in "${GPU_LEVELS[@]}"; do
   fi
 
   echo "JOB_${job_name}_STILL_QUEUED_DOWNGRADE"
-  rjob stop "$query_name" --namespace=ailab-dnacoding || true
+  rjob_clean stop "$query_name" --namespace=ailab-dnacoding || true
 done

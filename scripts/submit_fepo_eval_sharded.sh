@@ -47,7 +47,14 @@ if [[ "${MASKCAP_SCHEMA,,}" != none ]]; then SCHEMA_ARGS+=" --semantic-schema '$
 if [[ "${EXISTENCE_SCHEMA,,}" != none ]]; then SCHEMA_ARGS+=" --existence-schema '$EXISTENCE_SCHEMA'"; fi
 [[ -n "$SCHEMA_ARGS" ]] || { echo "At least one evaluation schema is required" >&2; exit 2; }
 
-rjob submit --name="$JOB_NAME" --namespace=ailab-dnacoding --cpu="$((GPU_COUNT * 10))" --gpu="$GPU_COUNT" --memory="$((GPU_COUNT * 80000))" --positive-tags="$POSITIVE_TAGS" \
+# rjob's Python client must bypass the workspace proxy. This also protects
+# direct invocations that do not go through the adaptive wrapper.
+rjob_clean() {
+  env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+      -u all_proxy -u ALL_PROXY -u no_proxy -u NO_PROXY rjob "$@"
+}
+
+rjob_clean submit --name="$JOB_NAME" --namespace=ailab-dnacoding --cpu="$((GPU_COUNT * 10))" --gpu="$GPU_COUNT" --memory="$((GPU_COUNT * 80000))" --positive-tags="$POSITIVE_TAGS" \
   --charged-group=dnacoding_gpu --private-machine=group \
   --mount=gpfs://gpfs1/dnacoding:/mnt/shared-storage-user/dnacoding \
   --mount=gpfs://gpfs1/wuyucheng:/mnt/shared-storage-user/wuyucheng \
